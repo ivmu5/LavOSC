@@ -10,12 +10,15 @@ public static class MauiProgram
         var builder = MauiApp.CreateBuilder();
         builder
             .UseMauiApp<LavOscApplication>()
-            .ConfigureLifecycleEvents(events => events.AddWindows(windows => windows.OnWindowCreated(window =>
-            {
-                string iconPath = Path.Combine(AppContext.BaseDirectory, "Resources", "AppIcon", "lavosc.ico");
-                if (File.Exists(iconPath))
-                    window.AppWindow.SetIcon(iconPath);
-            })));
+            .ConfigureFonts(fonts => fonts.AddFont("InterVariable.ttf", PulseVisuals.Font))
+            .ConfigureLifecycleEvents(events => events.AddWindows(windows => windows
+                .OnPlatformWindowSubclassed((window, _) => WindowsWindowChrome.Prepare(window))
+                .OnWindowCreated(window =>
+                {
+                    string iconPath = Path.Combine(AppContext.BaseDirectory, "Resources", "AppIcon", "lavosc.ico");
+                    if (File.Exists(iconPath))
+                        window.AppWindow.SetIcon(iconPath);
+                })));
 
         return builder.Build();
     }

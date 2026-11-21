@@ -29,6 +29,10 @@
     <ProjectReference Include="../LavOSC.Modules.Pedals/LavOSC.Modules.Pedals.csproj" />
     <None Remove="Resources/AppIcon/lavosc.ico" />
     <Content Include="Resources/AppIcon/lavosc.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Resources/AppIcon/lavosc.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <MauiImage Include="Resources/Images/*.svg" />
+    <MauiFont Include="Resources/Fonts/InterVariable.ttf" />
+    <Content Include="Resources/Fonts/Inter-OFL.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup Condition="'$(WindowsPackageType)' == 'None'">
     <AssemblyMetadata Include="Microsoft.Maui.ApplicationModel.AppInfo.PackageName" Value="$(ApplicationId)" />

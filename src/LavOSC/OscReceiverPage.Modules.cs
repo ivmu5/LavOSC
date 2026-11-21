@@ -28,19 +28,19 @@ internal sealed partial class OscReceiverPage
         };
     }
 
-    private View MakePedalDiagnostics() => Card(new VerticalStackLayout
+    private View MakePedalBody() => new VerticalStackLayout
     {
         Spacing = 7,
         Children =
         {
-            Heading("Педали", 18),
             Row(Caption("Газ · Y"), throttleValue),
             throttleBar,
             Row(Caption("Тормоз · Z"), brakeValue),
             brakeBar,
-            pedalStatus
+            pedalStatus,
+            pedalDrive
         }
-    });
+    };
 
     private void RefreshPedals(PedalSnapshot? snapshot)
     {

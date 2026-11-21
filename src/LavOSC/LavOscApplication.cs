@@ -21,11 +21,12 @@ public sealed class LavOscApplication : Application
         var window = new Window(page)
         {
             Title = "LavOSC",
-            Width = 1020,
-            Height = 820,
-            MinimumWidth = 760,
+            Width = 1120,
+            Height = 790,
+            MinimumWidth = 720,
             MinimumHeight = 520
         };
+        window.Created += (_, _) => WindowsWindowChrome.Attach(window, page);
         window.Destroying += (_, _) => page.Close();
         return window;
     }
