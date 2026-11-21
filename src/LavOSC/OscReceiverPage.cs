@@ -220,7 +220,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         var next = new WheelSession(CurrentSettings());
         try
         {
-            wheelRegistration = router.Register(next, "whell");
+            wheelRegistration = router.Register(next, WheelAlias);
             session = next;
         }
         catch

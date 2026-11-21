@@ -7,6 +7,7 @@ namespace Laveyana.LavOSC;
 
 internal sealed partial class OscReceiverPage
 {
+    private const string WheelAlias = "whell";
     private readonly Button pedalDrive = MakeButton("Включить педали", primary: true);
     private readonly ProgressBar throttleBar = new() { ProgressColor = Accent };
     private readonly ProgressBar brakeBar = new() { ProgressColor = Warning };
@@ -91,7 +92,7 @@ internal sealed partial class OscReceiverPage
         moduleEntries.Add(wheelModule);
         moduleEntries.Add(pedalsModule);
 
-        var names = new HashSet<string>(StringComparer.Ordinal) { "wheel", "whell", "pedals" };
+        var names = new HashSet<string>(StringComparer.Ordinal) { "wheel", WheelAlias, "pedals" };
         var extensions = new List<ModuleEntry>(modules.Count);
         foreach (IOscModule module in modules)
         {

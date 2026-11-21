@@ -40,6 +40,8 @@ dotnet publish .\src\LavOSC\LavOSC.csproj -c Release -p:Platform=x64 --self-cont
 
 ## Адреса OSC
 
+В каталоге модулей раздел **OSC-адреса** показывает входящие команды, типы и примеры аргументов, а также адреса обратной связи. Нажатие на название закреплённого модуля на главной открывает его карточку в каталоге.
+
 | Адрес | Кому доставляется |
 | --- | --- |
 | `/accxyz` | Всем модулям, подписанным на этот адрес |
@@ -95,6 +97,8 @@ public sealed class PanelModule : IOscModule
 // Требуются using Microsoft.Extensions.DependencyInjection; и using Laveyana.LavOSC.Core;
 builder.Services.AddSingleton<IOscModule, PanelModule>();
 ```
+
+Модуль может реализовать `IOscEndpointDocumentation` и вернуть список `OscEndpoint` в свойстве `Endpoints`. Каталог покажет адрес, направление, описание аргументов и пример, если он указан.
 
 Каждый `IOscModule` из DI появится в каталоге. При включении вызывается `Configure`, а после выключения новые сообщения в модуль не поступают. Уже начатый обработчик может закончить выполнение. Имена `wheel`, `whell` и `pedals` зарезервированы за встроенными модулями.
 

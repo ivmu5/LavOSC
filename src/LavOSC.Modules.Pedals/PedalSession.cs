@@ -13,6 +13,11 @@ public sealed record PedalSnapshot(double Throttle, double Brake, bool ThrottleF
 
 public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 {
+    private const string ModuleName = "pedals";
+    private const string StateCommand = "state";
+    private const string ThrottleCommand = "throttle";
+    private const string BrakeCommand = "brake";
+
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan TickPeriod = TimeSpan.FromMilliseconds(16);
     private readonly object gate = new();
@@ -25,15 +30,27 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     private string? notice;
     private bool disposed;
 
-    public string Name => "pedals";
+    public static IReadOnlyList<OscEndpoint> OscEndpoints { get; } = Array.AsReadOnly<OscEndpoint>([
+        new($"/{ModuleName}/{StateCommand}", OscEndpointDirection.Receive,
+            "Газ, тормоз · два аргумента float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{StateCommand} 0.65 0.0",
+            $"Через {Timeout.TotalMilliseconds:0} мс без данных значение соответствующего канала сбрасывается."),
+        new($"/{ModuleName}/{ThrottleCommand}", OscEndpointDirection.Receive,
+            "Газ · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{ThrottleCommand} 0.65"),
+        new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Receive,
+            "Тормоз · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{BrakeCommand} 0.25"),
+        new($"/{ModuleName}/feedback/{StateCommand}", OscEndpointDirection.Send,
+            "Газ и тормоз от 0 до 1 (float32), затем свежий сигнал газа, свежий сигнал тормоза и активный выход vJoy (bool).")
+    ]);
+
+    public string Name => ModuleName;
 
     public PedalSession() => timer = new Timer(_ => Tick(), null, TickPeriod, TickPeriod);
 
     void IOscModule.Configure(OscModuleRegistration registration)
     {
-        registration.OnCommand("state", command => Receive(command, throttle, brake));
-        registration.OnCommand("throttle", command => Receive(command, throttle));
-        registration.OnCommand("brake", command => Receive(command, brake));
+        registration.OnCommand(StateCommand, command => Receive(command, throttle, brake));
+        registration.OnCommand(ThrottleCommand, command => Receive(command, throttle));
+        registration.OnCommand(BrakeCommand, command => Receive(command, brake));
     }
 
     public PedalSnapshot Snapshot()
@@ -51,7 +68,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     public IReadOnlyList<OscFeedback> GetFeedback()
     {
         PedalSnapshot state = Snapshot();
-        return [new("state", [(float)state.Throttle, (float)state.Brake,
+        return [new(StateCommand, [(float)state.Throttle, (float)state.Brake,
             state.ThrottleFresh, state.BrakeFresh, state.OutputActive])];
     }
 
