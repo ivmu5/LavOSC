@@ -52,10 +52,11 @@ internal sealed partial class OscReceiverPage
         throttleValue.Text = snapshot is { ThrottleFresh: true } ? $"{snapshot.Throttle:P0}" : "—";
         brakeValue.Text = snapshot is { BrakeFresh: true } ? $"{snapshot.Brake:P0}" : "—";
         pedalStatus.IsVisible = pedalsModule.IsEnabled;
-        pedalStatus.Text = snapshot?.Notice ?? (active ? $"Передача в vJoy №{pedalDeviceId}"
+        pedalStatus.Text = snapshot?.Notice ?? (active ? (fresh ? $"Передача в vJoy №{pedalDeviceId}"
+            : $"vJoy №{pedalDeviceId} · ожидание данных педалей")
             : fresh ? $"Источник сигнала · {snapshot!.Sender}" : "Нет сигнала педалей");
         pedalStatus.TextColor = snapshot?.Notice is not null ? Warning : active ? Accent : Muted;
-        pedalDrive.IsEnabled = active || fresh && !working;
+        pedalDrive.IsEnabled = active || snapshot?.Sender is not null && !working;
         pedalDrive.Text = active ? "Выключить педали" : "Включить педали";
     }
 

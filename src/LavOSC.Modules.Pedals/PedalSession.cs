@@ -16,6 +16,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     private const string ModuleName = "pedals";
     private const string ThrottleCommand = "throttle";
     private const string BrakeCommand = "brake";
+    private const string HeartbeatCommand = "heartbeat";
 
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan TickPeriod = TimeSpan.FromMilliseconds(16);
@@ -25,6 +26,8 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     private readonly Channel throttle = new();
     private readonly Channel brake = new();
     private long lastTick = Stopwatch.GetTimestamp();
+    private long? lastInput;
+    private bool usesHeartbeat;
     private IPedalOutput? output;
     private string? sender;
     private string? notice;
@@ -33,10 +36,12 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     public static IReadOnlyList<OscEndpoint> OscEndpoints { get; } = Array.AsReadOnly<OscEndpoint>([
         new($"/{ModuleName}/{ThrottleCommand}", OscEndpointDirection.Receive,
             "Газ · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{ThrottleCommand} 0.65",
-            $"Через {Timeout.TotalMilliseconds:0} мс без данных значение сбрасывается."),
+            $"Без heartbeat требуется повторять значение чаще одного раза в {Timeout.TotalMilliseconds:0} мс."),
         new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Receive,
             "Тормоз · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{BrakeCommand} 0.25",
-            $"Через {Timeout.TotalMilliseconds:0} мс без данных значение сбрасывается."),
+            $"Без heartbeat требуется повторять значение чаще одного раза в {Timeout.TotalMilliseconds:0} мс."),
+        new($"/{ModuleName}/{HeartbeatCommand}", OscEndpointDirection.Receive, "Без аргументов.",
+            $"/{ModuleName}/{HeartbeatCommand}", "Периодически подтверждает связь. Между подтверждениями можно отправлять только изменившиеся значения."),
         new($"/{ModuleName}/{ThrottleCommand}", OscEndpointDirection.Send,
             "Текущее значение газа · один аргумент float32 в диапазоне 0–1."),
         new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Send,
@@ -51,6 +56,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     {
         registration.OnCommand(ThrottleCommand, command => Receive(command, throttle));
         registration.OnCommand(BrakeCommand, command => Receive(command, brake));
+        registration.OnCommand(HeartbeatCommand, ReceiveHeartbeat);
     }
 
     public PedalSnapshot Snapshot()
@@ -58,10 +64,13 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
         lock (gate)
         {
             long now = Stopwatch.GetTimestamp();
-            bool throttleFresh = !disposed && throttle.IsFresh(now);
-            bool brakeFresh = !disposed && brake.IsFresh(now);
+            bool throttleFresh = IsFresh(throttle, now);
+            bool brakeFresh = IsFresh(brake, now);
+            string? status = notice ?? (output is not null && usesHeartbeat && !HasRecentInput(now)
+                ? "Ожидание связи с педалями. Передача в vJoy возобновится автоматически."
+                : null);
             return new(throttleFresh ? throttle.Position : 0, brakeFresh ? brake.Position : 0,
-                throttleFresh, brakeFresh, output is not null, sender, notice);
+                throttleFresh, brakeFresh, output is not null, sender, status);
         }
     }
 
@@ -70,8 +79,8 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
         lock (gate)
         {
             long now = Stopwatch.GetTimestamp();
-            return [throttle.Feedback(ThrottleCommand, sender, !disposed && throttle.IsFresh(now)),
-                brake.Feedback(BrakeCommand, sender, !disposed && brake.IsFresh(now))];
+            return [throttle.Feedback(ThrottleCommand, sender, IsFresh(throttle, now)),
+                brake.Feedback(BrakeCommand, sender, IsFresh(brake, now))];
         }
     }
 
@@ -84,9 +93,8 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             if (output is not null)
                 return;
 
-            long now = Stopwatch.GetTimestamp();
-            if (!throttle.IsFresh(now) && !brake.IsFresh(now))
-                throw new InvalidOperationException("Для передачи в vJoy требуется сигнал педалей.");
+            if (sender is null)
+                throw new InvalidOperationException("Для передачи в vJoy сначала отправь команду педалей.");
 
             var candidate = acquire();
             try
@@ -136,17 +144,62 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 
         lock (gate)
         {
-            long now = Stopwatch.GetTimestamp();
-            if (disposed || Stopwatch.GetElapsedTime(envelope.ReceivedTimestamp, now) >= Timeout ||
-                (sender is not null && sender != envelope.Sender.IpAddress))
-                return;
-
-            if (output is not null && !throttle.IsFresh(now) && !brake.IsFresh(now))
-                StopOutput("Сигнал потерян. После восстановления требуется повторное включение педалей.");
-
-            sender ??= envelope.Sender.IpAddress;
-            channel.SetTarget(next, envelope.ReceivedTimestamp);
+            if (AcceptInput(envelope))
+                channel.SetTarget(next, envelope.ReceivedTimestamp);
         }
+    }
+
+    private void ReceiveHeartbeat(OscCommand command)
+    {
+        if (command.PathData.Count != 0 || command.Envelope.Message.Arguments.Count != 0)
+            return;
+
+        lock (gate)
+        {
+            if (!AcceptInput(command.Envelope))
+                return;
+            if (!usesHeartbeat)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (!throttle.IsFresh(now))
+                    throttle.Invalidate();
+                if (!brake.IsFresh(now))
+                    brake.Invalidate();
+                usesHeartbeat = true;
+            }
+        }
+    }
+
+    private bool AcceptInput(OscEnvelope envelope)
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (disposed || Stopwatch.GetElapsedTime(envelope.ReceivedTimestamp, now) >= Timeout ||
+            (sender is not null && sender != envelope.Sender.IpAddress))
+            return false;
+
+        CheckInputTimeout(now);
+        if (lastInput is long previous && envelope.ReceivedTimestamp < previous)
+            return false;
+
+        sender ??= envelope.Sender.IpAddress;
+        lastInput = envelope.ReceivedTimestamp;
+        return true;
+    }
+
+    private bool HasRecentInput(long now) =>
+        lastInput is long received && Stopwatch.GetElapsedTime(received, now) < Timeout;
+
+    private bool IsFresh(Channel channel, long now) => !disposed && channel.HasValue &&
+        (usesHeartbeat ? HasRecentInput(now) : channel.IsFresh(now));
+
+    private void CheckInputTimeout(long now)
+    {
+        if (!usesHeartbeat || lastInput is null || HasRecentInput(now))
+            return;
+
+        lastInput = null;
+        throttle.Invalidate();
+        brake.Invalidate();
     }
 
     private static bool TryReadPosition(object? value, out double position)
@@ -171,8 +224,9 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             double milliseconds = Stopwatch.GetElapsedTime(lastTick, now).TotalMilliseconds;
             lastTick = now;
             double ratio = 1 - Math.Exp(-milliseconds / 35);
-            bool throttleFresh = throttle.IsFresh(now);
-            bool brakeFresh = brake.IsFresh(now);
+            CheckInputTimeout(now);
+            bool throttleFresh = IsFresh(throttle, now);
+            bool brakeFresh = IsFresh(brake, now);
             bool changed = throttle.Advance(throttleFresh, ratio) | brake.Advance(brakeFresh, ratio);
 
             if (output is null)
@@ -180,9 +234,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 
             try
             {
-                if (!throttleFresh && !brakeFresh)
-                    StopOutput("Сигнал потерян. После восстановления требуется повторное включение педалей.");
-                else if (changed && !output.TryWrite(throttle.Position, brake.Position))
+                if (changed && !output.TryWrite(throttle.Position, brake.Position))
                     StopOutput("vJoy отклонил команду. Требуется повторное включение педалей.");
             }
             catch (Exception exception)
@@ -229,6 +281,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
         private bool targetFromClient;
 
         public double Position { get; private set; }
+        public bool HasValue { get; private set; }
 
         public bool IsFresh(long now) => timestamp is { } received &&
             Stopwatch.GetElapsedTime(received, now) < Timeout;
@@ -247,7 +300,10 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             target = value;
             timestamp = received;
             targetFromClient = true;
+            HasValue = true;
         }
+
+        public void Invalidate() => HasValue = false;
 
         public void ResetPosition()
         {

@@ -3,6 +3,7 @@ local brake
 local throttleFeedback
 local brakeFeedback
 local nextSend = 0
+local nextHeartbeat = 0
 local throttleAddress = '/pedals/throttle'
 local brakeAddress = '/pedals/brake'
 
@@ -28,11 +29,15 @@ end
 
 function update()
   local now = getMillis()
-  if now < nextSend then
+  if (not throttle and not brake) or now < nextSend then
     return
   end
 
   nextSend = now + 40
+  if now >= nextHeartbeat then
+    sendOSC('/pedals/heartbeat', { true })
+    nextHeartbeat = now + 100
+  end
   sendPedal(throttle, throttleFeedback, throttleAddress)
   sendPedal(brake, brakeFeedback, brakeAddress)
 end
