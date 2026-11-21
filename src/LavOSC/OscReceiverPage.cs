@@ -16,16 +16,16 @@ namespace Laveyana.LavOSC;
 
 internal sealed partial class OscReceiverPage : ContentPage
 {
-    private static readonly Color Canvas = Color.FromArgb("#111519");
-    private static readonly Color Panel = Color.FromArgb("#1A2128");
-    private static readonly Color Outline = Color.FromArgb("#333F4B");
-    private static readonly Color Text = Color.FromArgb("#F2F5F7");
-    private static readonly Color Muted = Color.FromArgb("#B1BEC9");
-    private static readonly Color Accent = Color.FromArgb("#94E1D0");
-    private static readonly Color Warning = Color.FromArgb("#F4C788");
+    private static readonly Color Canvas = PulseVisuals.Background;
+    private static readonly Color Panel = PulseVisuals.Card;
+    private static readonly Color Outline = PulseVisuals.Border;
+    private static readonly Color Text = PulseVisuals.Text;
+    private static readonly Color Muted = PulseVisuals.Muted;
+    private static readonly Color Accent = PulseVisuals.Accent;
+    private static readonly Color Warning = PulseVisuals.Warning;
 
     private readonly Entry port = MakeEntry(Keyboard.Numeric);
-    private readonly Picker device = new() { TextColor = Text, FontSize = 14 };
+    private readonly Picker device = new() { TextColor = Text, FontFamily = PulseVisuals.Font, FontSize = 14 };
     private readonly Entry dllPath = MakeEntry(Keyboard.Plain);
     private readonly Button listen = MakeButton("Начать приём");
     private readonly Button calibrate = MakeButton("Выставить центр");
@@ -39,7 +39,7 @@ internal sealed partial class OscReceiverPage : ContentPage
     private readonly Label vJoyLibrary = Caption();
     private readonly Label localAddresses = Caption();
     private readonly Label sensorValues = Caption();
-    private readonly Label angle = new() { FontSize = 40, FontAttributes = FontAttributes.Bold, TextColor = Text };
+    private readonly Label angle = Heading("", 30);
     private readonly Label axisValue = Caption();
     private readonly Label notice = Caption();
     private readonly Switch invert = new() { OnColor = Accent };
@@ -132,7 +132,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         };
 
         ConfigurePedalControls();
-        Content = MakeWorkspace();
+        Content = workspace = MakeWorkspace();
 
         ShowAddresses();
         Refresh();
@@ -180,64 +180,6 @@ internal sealed partial class OscReceiverPage : ContentPage
         StopListening();
         CloseExtensionModules();
     }
-
-    private View MakeControls()
-    {
-        var reload = MakeButton("Обновить IP");
-        reload.Clicked += (_, _) => ShowAddresses();
-
-        return new VerticalStackLayout
-        {
-            Spacing = 12,
-            Children =
-            {
-                Heading("Управление", 27),
-                Card(new VerticalStackLayout
-                {
-                    Spacing = 8,
-                    Children =
-                    {
-                        Heading("Приём OSC", 18),
-                        Field("UDP-порт", port),
-                        Row(listen, reload)
-                    }
-                }),
-                pinnedControls,
-                Card(new VerticalStackLayout
-                {
-                    Spacing = 8,
-                    Children =
-                    {
-                        Heading("vJoy", 18),
-                        Row(Caption("Автоподготовка при запуске"), autoSetup),
-                        Field("Устройство vJoy", device),
-                        Field("Путь к vJoyInterface.dll", dllPath),
-                        prepare
-                    }
-                })
-            }
-        };
-    }
-
-    private View MakeDiagnostics() => new VerticalStackLayout
-    {
-        Spacing = 12,
-        Children =
-        {
-            Heading("Показания", 27),
-            Card(new VerticalStackLayout
-            {
-                Spacing = 7,
-                Children = { Heading("Приём OSC", 18), networkStatus, localAddresses, discoveryStatus, routingStatus }
-            }),
-            pinnedDiagnostics,
-            Card(new VerticalStackLayout
-            {
-                Spacing = 7,
-                Children = { Heading("Состояние vJoy", 18), vJoyStatus, vJoyDevices, vJoyLibrary }
-            })
-        }
-    };
 
     private void ToggleListening()
     {
@@ -340,6 +282,8 @@ internal sealed partial class OscReceiverPage : ContentPage
         });
         networkStatus.TextColor = error is not null || input?.Error is not null ? Warning
             : input?.LastSender is not null ? Accent : Muted;
+        settingsNetworkStatus.Text = networkStatus.Text;
+        settingsNetworkStatus.TextColor = networkStatus.TextColor;
         routingStatus.IsVisible = routing.DroppedDeliveries > 0 || routing.HandlerErrors > 0;
         routingStatus.TextColor = Warning;
         routingStatus.Text = $"Пропущено доставок: {routing.DroppedDeliveries:N0} · Ошибок модулей: {routing.HandlerErrors:N0}" +
@@ -373,6 +317,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         dllPath.IsEnabled = device.IsEnabled;
         prepare.IsEnabled = device.IsEnabled && (wheelModule.IsEnabled || pedalsModule.IsEnabled);
         listen.Text = input?.Listening == true ? "Остановить приём" : "Начать приём";
+        settingsListen.Text = listen.Text;
         calibrate.IsEnabled = receiving;
         drive.IsEnabled = active || receiving && calibrated && !working;
         drive.Text = active ? "Выключить руль" : "Включить руль";
@@ -420,20 +365,21 @@ internal sealed partial class OscReceiverPage : ContentPage
         number >= min && number <= max;
 
     private static Label Caption(string value = "") =>
-        new() { Text = value, TextColor = Muted, FontSize = 14, VerticalOptions = LayoutOptions.Center };
+        new() { Text = value, TextColor = Muted, FontFamily = PulseVisuals.Font, FontSize = 13, VerticalOptions = LayoutOptions.Center };
 
     private static Label Heading(string value, double size) =>
-        new() { Text = value, FontSize = size, FontAttributes = FontAttributes.Bold, TextColor = Text };
+        new() { Text = value, FontSize = size, FontFamily = PulseVisuals.Font, FontAttributes = FontAttributes.Bold, TextColor = Text };
 
     private static Button MakeButton(string text, bool primary = false) =>
         new()
         {
-            Text = text, TextColor = primary ? Canvas : Text, BackgroundColor = primary ? Accent : Outline,
-            CornerRadius = 7, Padding = new Thickness(14, 8), MinimumHeightRequest = 36
+            Text = text, TextColor = primary ? Canvas : Text, BackgroundColor = primary ? Accent : PulseVisuals.Button,
+            FontFamily = PulseVisuals.Font, FontSize = 12, CornerRadius = 9,
+            Padding = new Thickness(10, 8), MinimumHeightRequest = 36
         };
 
     private static Entry MakeEntry(Keyboard keyboard) =>
-        new() { Keyboard = keyboard, TextColor = Text, MinimumHeightRequest = 36, FontSize = 14 };
+        new() { Keyboard = keyboard, TextColor = Text, MinimumHeightRequest = 36, FontSize = 14, FontFamily = PulseVisuals.Font };
 
     private static Slider MakeSlider(double min, double max) =>
         new() { Minimum = min, Maximum = max, MinimumTrackColor = Accent, MaximumTrackColor = Outline };
@@ -471,8 +417,8 @@ internal sealed partial class OscReceiverPage : ContentPage
     private static Border Card(View content) =>
         new()
         {
-            BackgroundColor = Panel, Stroke = new SolidColorBrush(Outline), StrokeThickness = 1,
-            StrokeShape = new RoundRectangle { CornerRadius = 12 }, Padding = new Thickness(16, 12),
+            BackgroundColor = Panel, Stroke = new SolidColorBrush(Outline.WithAlpha(.32f)), StrokeThickness = 1,
+            StrokeShape = new RoundRectangle { CornerRadius = 12 }, Padding = new Thickness(14, 12),
             Content = content
         };
 

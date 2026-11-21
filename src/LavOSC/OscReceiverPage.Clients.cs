@@ -16,7 +16,6 @@ internal sealed partial class OscReceiverPage
 {
     private const string ClientsKey = "OscFeedbackClients";
     private const int DefaultFeedbackPort = 9000;
-    private readonly Button clientsTab = MakeButton("Клиенты");
     private readonly Label feedbackStatus = Caption();
     private readonly ObservableCollection<FeedbackClient> feedbackClients = [];
     private readonly HashSet<string> feedbackAddresses = new(StringComparer.Ordinal);
