@@ -44,7 +44,6 @@ internal sealed partial class OscReceiverPage : ContentPage
     private readonly Label notice = Caption();
     private readonly Switch invert = new() { OnColor = Accent };
     private readonly Switch autoSetup = new() { OnColor = Accent };
-    private readonly Switch wheelEnabled = new() { OnColor = Accent };
     private readonly Slider lockDegrees = MakeSlider(25, 110);
     private readonly Slider deadZone = MakeSlider(0, 10);
     private readonly Slider smoothing = MakeSlider(0, 150);
@@ -84,7 +83,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         string oldDllPath = preferences.Get("VJoyDll", "");
         dllPath.Text = preferences.Get("VJoyDllOverride", File.Exists(oldDllPath) ? oldDllPath : "");
         autoSetup.IsToggled = preferences.Get("VJoyAutoSetup", true);
-        wheelEnabled.IsToggled = preferences.Get("WheelModuleEnabled", true);
+        InitializeModules(modules, preferences);
 
         var settings = new SteeringSettings(preferences.Get("LockDegrees", 60d),
             preferences.Get("DeadZoneDegrees", 2d), preferences.Get("SmoothingMs", 55d),
@@ -112,28 +111,8 @@ internal sealed partial class OscReceiverPage : ContentPage
             Refresh();
         };
         prepare.Clicked += async (_, _) => await PrepareVJoyAsync(arm: false,
-            (wheelEnabled.IsToggled ? VJoyAxes.X : VJoyAxes.None) |
-            (pedalsEnabled.IsToggled ? VJoyAxes.Pedals : VJoyAxes.None));
-        wheelEnabled.Toggled += async (_, args) =>
-        {
-            preferences.Set("WheelModuleEnabled", args.Value);
-            if (args.Value)
-            {
-                if (receiver?.Snapshot().Listening == true)
-                    AttachWheel();
-                if (autoSetup.IsToggled)
-                {
-                    armAfterCalibration = true;
-                    await PrepareVJoyAsync(arm: false);
-                }
-            }
-            else
-            {
-                armAfterCalibration = false;
-                DetachWheel();
-            }
-            Refresh();
-        };
+            (wheelModule.IsEnabled ? VJoyAxes.X : VJoyAxes.None) |
+            (pedalsModule.IsEnabled ? VJoyAxes.Pedals : VJoyAxes.None));
         invert.Toggled += (_, _) => SaveSteeringSettings();
         autoSetup.Toggled += (_, args) =>
         {
@@ -152,17 +131,8 @@ internal sealed partial class OscReceiverPage : ContentPage
             ClearPreparedDevice();
         };
 
-        ConfigurePedalControls(preferences);
-
-        var layout = new Grid
-        {
-            Padding = new Thickness(18),
-            ColumnSpacing = 16,
-            ColumnDefinitions = { new ColumnDefinition(new GridLength(360)), new ColumnDefinition(GridLength.Star) }
-        };
-        layout.Add(new ScrollView { Content = MakeControls(modules) }, 0, 0);
-        layout.Add(new ScrollView { Content = MakeDiagnostics() }, 1, 0);
-        Content = layout;
+        ConfigurePedalControls();
+        Content = MakeWorkspace();
 
         ShowAddresses();
         Refresh();
@@ -179,6 +149,7 @@ internal sealed partial class OscReceiverPage : ContentPage
             }
         };
         timer.Start();
+        StartFeedbackTimer();
         Loaded += async (_, _) =>
         {
             if (initialized || closed)
@@ -186,7 +157,7 @@ internal sealed partial class OscReceiverPage : ContentPage
 
             initialized = true;
             ToggleListening();
-            if (wheelEnabled.IsToggled && autoSetup.IsToggled)
+            if (wheelModule.IsEnabled && autoSetup.IsToggled)
             {
                 armAfterCalibration = true;
                 await PrepareVJoyAsync(arm: false);
@@ -201,19 +172,21 @@ internal sealed partial class OscReceiverPage : ContentPage
 
         closed = true;
         timer.Stop();
+        feedbackTimer.Stop();
         lifetime.Cancel();
+        feedbackSocket?.Dispose();
         if (!working)
             lifetime.Dispose();
         StopListening();
         CloseExtensionModules();
     }
 
-    private View MakeControls(IReadOnlyList<IOscModule> modules)
+    private View MakeControls()
     {
         var reload = MakeButton("Обновить IP");
         reload.Clicked += (_, _) => ShowAddresses();
 
-        var controls = new VerticalStackLayout
+        return new VerticalStackLayout
         {
             Spacing = 12,
             Children =
@@ -229,21 +202,7 @@ internal sealed partial class OscReceiverPage : ContentPage
                         Row(listen, reload)
                     }
                 }),
-                Card(new VerticalStackLayout
-                {
-                    Spacing = 8,
-                    Children =
-                    {
-                        Heading("Руль · /wheel", 18),
-                        Row(Caption("Модуль включён"), wheelEnabled),
-                        Row(calibrate, drive),
-                        SliderField("Угол от центра до упора", lockDegrees, "°"),
-                        SliderField("Мёртвая зона", deadZone, "°"),
-                        SliderField("Сглаживание", smoothing, " мс"),
-                        Row(Caption("Инверсия руля"), invert)
-                    }
-                }),
-                MakePedalControls(),
+                pinnedControls,
                 Card(new VerticalStackLayout
                 {
                     Spacing = 8,
@@ -258,9 +217,6 @@ internal sealed partial class OscReceiverPage : ContentPage
                 })
             }
         };
-        if (modules.Count > 0)
-            controls.Children.Add(MakeExtensionModules(modules));
-        return controls;
     }
 
     private View MakeDiagnostics() => new VerticalStackLayout
@@ -272,23 +228,9 @@ internal sealed partial class OscReceiverPage : ContentPage
             Card(new VerticalStackLayout
             {
                 Spacing = 7,
-                Children = { Heading("Приём OSC", 18), networkStatus, localAddresses, routingStatus }
+                Children = { Heading("Приём OSC", 18), networkStatus, localAddresses, discoveryStatus, routingStatus }
             }),
-            Card(new VerticalStackLayout
-            {
-                Spacing = 6,
-                Children =
-                {
-                    Heading("Ось руля", 18),
-                    Row(angle, axisValue),
-                    gaugeView,
-                    Row(Caption("Влево"), Caption("Вправо")),
-                    sensorValues,
-                    sampleStatus,
-                    notice
-                }
-            }),
-            MakePedalDiagnostics(),
+            pinnedDiagnostics,
             Card(new VerticalStackLayout
             {
                 Spacing = 7,
@@ -313,11 +255,12 @@ internal sealed partial class OscReceiverPage : ContentPage
             StopListening();
             try
             {
-                if (wheelEnabled.IsToggled)
+                if (wheelModule.IsEnabled)
                     AttachWheel();
-                if (pedalsEnabled.IsToggled)
+                if (pedalsModule.IsEnabled)
                     AttachPedals();
                 receiver = new OscUdpReceiver(value, router);
+                AdvertiseHost(receiver.Snapshot().Port);
                 Preferences.Default.Set("OscPort", value);
             }
             catch (SocketException exception)
@@ -347,8 +290,10 @@ internal sealed partial class OscReceiverPage : ContentPage
 
     private void StopListening()
     {
+        DiscoverClients();
         receiver?.Dispose();
         receiver = null;
+        AdvertiseHost(null);
         DetachWheel();
         DetachPedals();
     }
@@ -412,7 +357,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         axisValue.Text = calibrated && receiving ? $"{snapshot!.Position * 100:+0;-0;0}%" : "—%";
         sensorValues.Text = receiving ? $"X {snapshot!.X:F2}     Y {snapshot.Y:F2}     Z {snapshot.Z:F2}" : "X —     Y —     Z —";
         string? issue = snapshot?.Notice;
-        notice.Text = issue ?? (!wheelEnabled.IsToggled ? "Модуль выключен" :
+        notice.Text = issue ?? (!wheelModule.IsEnabled ? "Модуль выключен" :
             calibrated ? "Центр выставлен" : "Держи телефон как руль и выставь центр.");
         notice.TextColor = issue is null ? Muted : Warning;
 
@@ -426,7 +371,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         port.IsEnabled = input?.Listening != true;
         device.IsEnabled = !active && !pedalsActive && !working;
         dllPath.IsEnabled = device.IsEnabled;
-        prepare.IsEnabled = device.IsEnabled && (wheelEnabled.IsToggled || pedalsEnabled.IsToggled);
+        prepare.IsEnabled = device.IsEnabled && (wheelModule.IsEnabled || pedalsModule.IsEnabled);
         listen.Text = input?.Listening == true ? "Остановить приём" : "Начать приём";
         calibrate.IsEnabled = receiving;
         drive.IsEnabled = active || receiving && calibrated && !working;

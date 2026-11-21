@@ -11,7 +11,7 @@ public interface IPedalOutput : IDisposable
 public sealed record PedalSnapshot(double Throttle, double Brake, bool ThrottleFresh, bool BrakeFresh,
     bool OutputActive, string? Sender, string? Notice);
 
-public sealed class PedalSession : IOscModule, IDisposable
+public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan TickPeriod = TimeSpan.FromMilliseconds(16);
@@ -46,6 +46,13 @@ public sealed class PedalSession : IOscModule, IDisposable
             return new(throttleFresh ? throttle.Position : 0, brakeFresh ? brake.Position : 0,
                 throttleFresh, brakeFresh, output is not null, sender, notice);
         }
+    }
+
+    public IReadOnlyList<OscFeedback> GetFeedback()
+    {
+        PedalSnapshot state = Snapshot();
+        return [new("state", [(float)state.Throttle, (float)state.Brake,
+            state.ThrottleFresh, state.BrakeFresh, state.OutputActive])];
     }
 
     public void EnableOutput(Func<IPedalOutput> acquire)
