@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 
 namespace Laveyana.LavOSC.Core;
@@ -51,6 +52,7 @@ public sealed record OscRoutingSnapshot(long DroppedDeliveries, long HandlerErro
 public sealed class OscRouter
 {
     private readonly object gate = new();
+    private readonly ConditionalWeakTable<IOscModule, object> deliveryGates = new();
     private readonly Dictionary<string, Route> modules = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<Subscription>> subscriptions = new(StringComparer.Ordinal);
     private long droppedDeliveries;
@@ -76,7 +78,7 @@ public sealed class OscRouter
                 if (modules.ContainsKey(routeName))
                     throw new InvalidOperationException($"Адрес /{routeName} уже зарегистрирован.");
 
-            var route = new Route(this, name, names, registration.Commands);
+            var route = new Route(this, name, names, registration.Commands, deliveryGates.GetOrCreateValue(module));
             foreach (string routeName in names)
                 modules.Add(routeName, route);
             foreach (var (address, handler) in registration.Subscriptions)
@@ -158,6 +160,7 @@ public sealed class OscRouter
     private sealed class Route : IDisposable
     {
         private readonly OscRouter router;
+        private readonly object deliveryGate;
         private int disposed;
 
         public string Name { get; }
@@ -169,9 +172,11 @@ public sealed class OscRouter
             FullMode = BoundedChannelFullMode.Wait
         });
 
-        public Route(OscRouter router, string name, string[] names, Dictionary<string, Action<OscCommand>> commands)
+        public Route(OscRouter router, string name, string[] names, Dictionary<string, Action<OscCommand>> commands,
+            object deliveryGate)
         {
             this.router = router;
+            this.deliveryGate = deliveryGate;
             Name = name;
             Names = names;
             Commands = new(commands, StringComparer.Ordinal);
@@ -188,20 +193,23 @@ public sealed class OscRouter
         {
             await foreach (Delivery delivery in Queue.Reader.ReadAllAsync().ConfigureAwait(false))
             {
-                if (Volatile.Read(ref disposed) != 0)
-                    break;
+                lock (deliveryGate)
+                {
+                    if (Volatile.Read(ref disposed) != 0)
+                        break;
 
-                try
-                {
-                    if (delivery.Command is { } command)
-                        delivery.Handler!(command);
-                    else
-                        delivery.Subscriber!(delivery.Envelope);
-                }
-                catch (Exception error)
-                {
-                    Volatile.Write(ref router.lastHandlerError, $"{Name}: {error.Message}");
-                    Interlocked.Increment(ref router.handlerErrors);
+                    try
+                    {
+                        if (delivery.Command is { } command)
+                            delivery.Handler!(command);
+                        else
+                            delivery.Subscriber!(delivery.Envelope);
+                    }
+                    catch (Exception error)
+                    {
+                        Volatile.Write(ref router.lastHandlerError, $"{Name}: {error.Message}");
+                        Interlocked.Increment(ref router.handlerErrors);
+                    }
                 }
             }
         }

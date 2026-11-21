@@ -1,31 +1,40 @@
 using System.Runtime.InteropServices;
+using Laveyana.LavOSC.Modules.Pedals;
 using Laveyana.LavOSC.Modules.Wheel;
 
 namespace Laveyana.LavOSC;
 
 internal enum VJoyDeviceState { Owned, Free, Busy, Missing, Unknown }
 
-internal sealed record VJoyDevice(int Id, VJoyDeviceState State, bool HasXAxis);
+[Flags]
+internal enum VJoyAxes { None = 0, X = 1, Y = 2, Z = 4, Pedals = Y | Z, All = X | Y | Z }
+
+internal sealed record VJoyDevice(int Id, VJoyDeviceState State, VJoyAxes Axes, VJoyAxes AvailableAxes);
 internal sealed record VJoyScan(string DllPath, bool DriverEnabled, VJoyDevice[] Devices);
 
-internal sealed class VJoyOutput : ISteeringOutput
+internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
 {
-    private const uint SteeringAxis = 0x30; // HID_USAGE_X
     private static readonly object DriverLock = new();
+    private static readonly (VJoyAxes Axis, uint Usage)[] AxisUsages =
+        [(VJoyAxes.X, 0x30), (VJoyAxes.Y, 0x31), (VJoyAxes.Z, 0x32)];
+    private static readonly Dictionary<uint, VJoyAxes> LeasedAxes = new();
     private static VJoyApi? processApi;
     private readonly VJoyApi api;
     private readonly uint id;
-    private readonly int minimum;
-    private readonly int maximum;
+    private readonly VJoyAxes axes;
+    private readonly Dictionary<VJoyAxes, AxisRange> ranges;
     private bool disposed;
 
-    private VJoyOutput(VJoyApi api, uint id, int minimum, int maximum)
+    private VJoyOutput(VJoyApi api, uint id, VJoyAxes axes, Dictionary<VJoyAxes, AxisRange> ranges)
     {
         this.api = api;
         this.id = id;
-        this.minimum = minimum;
-        this.maximum = maximum;
+        this.axes = axes;
+        this.ranges = ranges;
     }
+
+    public static string FormatAxes(VJoyAxes axes) => string.Join(", ", AxisUsages
+        .Where(entry => (axes & entry.Axis) != 0).Select(entry => entry.Axis.ToString()));
 
     public static VJoyScan Scan(string path)
     {
@@ -38,68 +47,96 @@ internal sealed class VJoyOutput : ISteeringOutput
             var devices = new VJoyDevice[16];
             for (int id = 1; id <= devices.Length; id++)
             {
-                VJoyDeviceState state = api.Status((uint)id);
-                bool hasAxis = state is (VJoyDeviceState.Free or VJoyDeviceState.Busy or VJoyDeviceState.Owned) &&
-                    api.HasAxis((uint)id, SteeringAxis) != 0;
-                devices[id - 1] = new(id, state, hasAxis);
+                var deviceId = (uint)id;
+                VJoyDeviceState state = api.Status(deviceId);
+                VJoyAxes axes = VJoyAxes.None;
+                if (state is VJoyDeviceState.Free or VJoyDeviceState.Busy or VJoyDeviceState.Owned)
+                    foreach (var (axis, usage) in AxisUsages)
+                        if (api.HasAxis(deviceId, usage) != 0)
+                            axes |= axis;
+
+                bool leased = LeasedAxes.TryGetValue(deviceId, out var used);
+                var available = state switch
+                {
+                    VJoyDeviceState.Free when !leased => axes,
+                    VJoyDeviceState.Owned when leased => axes & ~used,
+                    _ => VJoyAxes.None
+                };
+                devices[id - 1] = new(id, state, axes, available);
             }
             return new(api.Path, true, devices);
         }
     }
 
-    public static VJoyOutput Connect(uint id, string path)
+    public static VJoyOutput Connect(uint id, string path, VJoyAxes axes)
     {
         lock (DriverLock)
         {
             VJoyApi api = GetEnabledApi(path) ??
                 throw new InvalidOperationException("Драйвер vJoy недоступен. Нажми «Подготовить vJoy», чтобы проверить его состояние.");
 
-            switch (api.Status(id))
-            {
-                case VJoyDeviceState.Free:
-                    break;
-                case VJoyDeviceState.Owned:
-                case VJoyDeviceState.Busy:
-                    throw new InvalidOperationException($"Устройство vJoy №{id} занято.");
-                case VJoyDeviceState.Missing:
-                    throw new InvalidOperationException($"Устройство vJoy №{id} отсутствует. Проверь его в Configure vJoy.");
-                default:
-                    throw new InvalidOperationException($"Не удалось определить состояние vJoy №{id}.");
-            }
+            if (axes is VJoyAxes.None || (axes & ~VJoyAxes.All) != 0)
+                throw new ArgumentOutOfRangeException(nameof(axes));
 
-            if (api.Acquire(id) == 0)
+            var state = api.Status(id);
+            bool leased = LeasedAxes.TryGetValue(id, out var used);
+            if (state == VJoyDeviceState.Missing)
+                throw new InvalidOperationException($"Устройство vJoy №{id} отсутствует. Проверь его в Configure vJoy.");
+            if ((leased ? state != VJoyDeviceState.Owned : state != VJoyDeviceState.Free) || (used & axes) != 0)
+                throw new InvalidOperationException($"Устройство vJoy №{id} или оси {FormatAxes(axes)} заняты.");
+
+            if (!leased && api.Acquire(id) == 0)
                 throw new InvalidOperationException($"Не удалось открыть устройство vJoy №{id}.");
 
             try
             {
-                if (api.HasAxis(id, SteeringAxis) == 0)
-                    throw new InvalidOperationException($"Включи ось X для устройства vJoy №{id} в Configure vJoy.");
+                var ranges = new Dictionary<VJoyAxes, AxisRange>();
+                foreach (var (axis, usage) in AxisUsages)
+                {
+                    if ((axes & axis) == 0)
+                        continue;
+                    if (api.HasAxis(id, usage) == 0)
+                        throw new InvalidOperationException($"Включи ось {axis} устройства vJoy №{id} в Configure vJoy.");
+                    if (api.AxisMin(id, usage, out int minimum) == 0 ||
+                        api.AxisMax(id, usage, out int maximum) == 0 || maximum <= minimum)
+                        throw new InvalidOperationException($"Не удалось прочитать диапазон оси {axis} в vJoy.");
 
-                if (api.AxisMin(id, SteeringAxis, out int minimum) == 0 ||
-                    api.AxisMax(id, SteeringAxis, out int maximum) == 0 || maximum <= minimum)
-                    throw new InvalidOperationException("Не удалось прочитать диапазон оси X в vJoy.");
+                    ranges.Add(axis, new(usage, minimum, maximum));
+                }
 
-                return new VJoyOutput(api, id, minimum, maximum);
+                LeasedAxes[id] = used | axes;
+                return new VJoyOutput(api, id, axes, ranges);
             }
             catch
             {
-                api.Release(id);
+                if (!leased)
+                    api.Release(id);
                 throw;
             }
         }
     }
 
-    public bool TryWrite(double position)
+    bool ISteeringOutput.TryWrite(double position)
     {
         lock (DriverLock)
         {
-            if (disposed)
-                return false;
-
-            double fraction = (Math.Clamp(position, -1, 1) + 1) / 2;
-            int value = (int)Math.Round(minimum + fraction * ((double)maximum - minimum));
-            return api.WriteAxis(value, id, SteeringAxis) != 0;
+            return TryWriteAxis(VJoyAxes.X, (position + 1) / 2);
         }
+    }
+
+    bool IPedalOutput.TryWrite(double throttle, double brake)
+    {
+        lock (DriverLock)
+            return TryWriteAxis(VJoyAxes.Y, throttle) & TryWriteAxis(VJoyAxes.Z, brake);
+    }
+
+    private bool TryWriteAxis(VJoyAxes axis, double fraction)
+    {
+        if (disposed || !double.IsFinite(fraction) || !ranges.TryGetValue(axis, out var range))
+            return false;
+
+        int value = (int)Math.Round(range.Minimum + Math.Clamp(fraction, 0, 1) * ((double)range.Maximum - range.Minimum));
+        return api.WriteAxis(value, id, range.Usage) != 0;
     }
 
     public void Dispose()
@@ -110,7 +147,16 @@ internal sealed class VJoyOutput : ISteeringOutput
                 return;
 
             disposed = true;
-            api.Release(id);
+            VJoyAxes remaining = LeasedAxes[id] & ~axes;
+            if (remaining == VJoyAxes.None)
+            {
+                LeasedAxes.Remove(id);
+                api.Release(id);
+            }
+            else
+            {
+                LeasedAxes[id] = remaining;
+            }
         }
     }
 
@@ -153,6 +199,8 @@ internal sealed class VJoyOutput : ISteeringOutput
                 NativeLibrary.Free(library);
         }
     }
+
+    private readonly record struct AxisRange(uint Usage, int Minimum, int Maximum);
 
     private sealed record VJoyApi(string Path, DriverEnabled Enabled, GetStatus Status, AxisExists HasAxis,
         AcquireDevice Acquire, ReleaseDevice Release, GetAxisLimit AxisMin, GetAxisLimit AxisMax, SetAxis WriteAxis);

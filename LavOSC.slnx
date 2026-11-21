@@ -6,5 +6,6 @@
     <Platform Project="x64" />
   </Project>
   <Project Path="src/LavOSC.Modules.Wheel/LavOSC.Modules.Wheel.csproj" />
+  <Project Path="src/LavOSC.Modules.Pedals/LavOSC.Modules.Pedals.csproj" />
   <Project Path="src/LavOSC.Core/LavOSC.Core.csproj" />
 </Solution>
