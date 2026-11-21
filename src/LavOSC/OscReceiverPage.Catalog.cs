@@ -1,7 +1,9 @@
+using System.Runtime.InteropServices;
 using Laveyana.LavOSC.Core;
 using Laveyana.LavOSC.Modules.Pedals;
 using Laveyana.LavOSC.Modules.Wheel;
 using Microsoft.Maui;
+using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Storage;
 
@@ -185,12 +187,13 @@ internal sealed partial class OscReceiverPage
             reference.Children.Add(Heading(group.Key == OscEndpointDirection.Receive ? "Входящие" : "Обратная связь", 13));
             foreach (OscEndpoint endpoint in group)
             {
-                var address = Heading(endpoint.Address, 13);
-                address.FontFamily = "Consolas";
-                var details = new VerticalStackLayout { Spacing = 4, Children = { address } };
+                var details = new VerticalStackLayout { Spacing = 4, Children = { MakeOscAddressRow(endpoint.Address) } };
                 if (entry == wheelModule && endpoint.Direction == OscEndpointDirection.Receive &&
                     endpoint.Address.StartsWith(entry.Address + "/", StringComparison.Ordinal))
-                    details.Children.Add(Caption($"Псевдоним · /{WheelAlias}{endpoint.Address[entry.Address.Length..]}"));
+                {
+                    details.Children.Add(Caption("Псевдоним"));
+                    details.Children.Add(MakeOscAddressRow($"/{WheelAlias}{endpoint.Address[entry.Address.Length..]}"));
+                }
                 details.Children.Add(Caption(endpoint.Arguments));
                 if (endpoint.Example is { } example)
                 {
@@ -205,6 +208,32 @@ internal sealed partial class OscReceiverPage
             }
         }
         return Card(reference);
+    }
+
+    private static View MakeOscAddressRow(string address)
+    {
+        var field = MakeEntry(Keyboard.Default);
+        field.Text = address;
+        field.IsReadOnly = true;
+        field.FontFamily = "Consolas";
+        field.FontSize = 13;
+        SemanticProperties.SetDescription(field, "OSC-адрес");
+
+        var copy = MakeButton("Копировать");
+        SemanticProperties.SetDescription(copy, $"Копировать OSC-адрес {address}");
+        copy.Clicked += async (_, _) =>
+        {
+            try
+            {
+                await Clipboard.Default.SetTextAsync(address);
+                copy.Text = "Скопировано";
+            }
+            catch (Exception exception) when (exception is ExternalException or InvalidOperationException)
+            {
+                copy.Text = "Ошибка копирования";
+            }
+        };
+        return Row(field, copy);
     }
 
     private View MakeModuleControls(ModuleEntry entry)
