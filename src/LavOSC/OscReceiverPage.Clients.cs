@@ -206,11 +206,12 @@ internal sealed partial class OscReceiverPage
     private void UpdateRecipients() => feedbackRecipients = feedbackClients.Where(client => client.Enabled)
         .Select(client => client.EndPoint).ToArray();
 
-    private void UpdateFeedbackStatus(string? failure = null)
+    private void UpdateFeedbackStatus(string? failure = null, int packetsSent = 0)
     {
         feedbackStatus.TextColor = failure is null ? Muted : Warning;
         feedbackStatus.Text = failure ?? (feedbackRecipients.Length == 0 ? "Нет получателей обратной связи."
-            : $"Получателей обратной связи · {feedbackRecipients.Length}");
+            : packetsSent == 0 ? "Нет исходящих OSC-пакетов."
+            : $"Получателей · {feedbackRecipients.Length} · UDP-пакетов за цикл · {packetsSent}");
         dashboardFeedbackStatus.TextColor = feedbackStatus.TextColor;
         dashboardFeedbackStatus.Text = feedbackStatus.Text;
         dashboardFeedbackStatus.IsVisible = failure is not null || feedbackRecipients.Length > 0;
@@ -249,16 +250,19 @@ internal sealed partial class OscReceiverPage
                 sources.Add((module.Name, source));
         }
         if (sources.Count == 0)
+        {
+            UpdateFeedbackStatus("Обратная связь модулей неактивна.");
             return;
+        }
 
         publishingFeedback = true;
         CancellationToken token = lifetime.Token;
         try
         {
             var udp = feedbackSocket ??= new UdpClient(AddressFamily.InterNetwork);
-            string? failure = await Task.Run(() => FeedbackDelivery.SendAsync(udp, recipients, sources, token), token);
-            if (!closed)
-                UpdateFeedbackStatus(failure);
+            var (packetsSent, failure) = await Task.Run(() => FeedbackDelivery.SendAsync(udp, recipients, sources, token), token);
+            if (!closed && ReferenceEquals(recipients, feedbackRecipients))
+                UpdateFeedbackStatus(failure, packetsSent);
         }
         catch (Exception exception) when (exception is SocketException or OperationCanceledException or ObjectDisposedException)
         {

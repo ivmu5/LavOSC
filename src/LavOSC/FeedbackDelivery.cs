@@ -6,10 +6,11 @@ namespace Laveyana.LavOSC;
 
 internal static class FeedbackDelivery
 {
-    public static async Task<string?> SendAsync(UdpClient udp, IReadOnlyList<IPEndPoint> recipients,
+    public static async Task<(int PacketsSent, string? Error)> SendAsync(UdpClient udp, IReadOnlyList<IPEndPoint> recipients,
         IReadOnlyList<(string Name, IOscFeedbackSource Source)> sources, CancellationToken token)
     {
         string? error = null;
+        int packetsSent = 0;
         foreach (var (name, source) in sources)
         {
             token.ThrowIfCancellationRequested();
@@ -23,6 +24,7 @@ internal static class FeedbackDelivery
                         try
                         {
                             await udp.SendAsync(packet.AsMemory(), client, token).ConfigureAwait(false);
+                            packetsSent++;
                         }
                         catch (SocketException exception)
                         {
@@ -36,6 +38,6 @@ internal static class FeedbackDelivery
                 error ??= $"/{name}: {exception.Message}";
             }
         }
-        return error;
+        return (packetsSent, error);
     }
 }
