@@ -5,6 +5,9 @@ namespace Laveyana.LavOSC.Core;
 
 public sealed record OscFeedback(string Name, IReadOnlyList<object?> Arguments)
 {
+    /// <summary>Sends on /module/name instead of /module/feedback/name.</summary>
+    public bool UseCommandAddress { get; init; }
+
     public byte[] Encode(string module)
     {
         OscModuleRegistration.ValidateSegment(module, nameof(module));
@@ -19,7 +22,7 @@ public sealed record OscFeedback(string Name, IReadOnlyList<object?> Arguments)
             });
 
         using var stream = new MemoryStream();
-        WriteString(stream, $"/{module}/feedback/{Name}");
+        WriteString(stream, UseCommandAddress ? $"/{module}/{Name}" : $"/{module}/feedback/{Name}");
         WriteString(stream, tags.ToString());
         Span<byte> bytes = stackalloc byte[8];
         foreach (object? argument in Arguments)
