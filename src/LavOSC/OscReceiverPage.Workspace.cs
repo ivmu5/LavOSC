@@ -7,7 +7,7 @@ namespace Laveyana.LavOSC;
 internal sealed partial class OscReceiverPage
 {
     private readonly DashboardGrid pinnedCards = new(3);
-    private readonly Label emptyDashboard = Caption("Закрепи нужные модули в каталоге.");
+    private readonly Label emptyDashboard = Caption("Нет закреплённых модулей.");
     private readonly Button settingsListen = MakeButton("Начать приём");
     private readonly Label settingsNetworkStatus = Caption();
     private ContentView? wheelSlot;

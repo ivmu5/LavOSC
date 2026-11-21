@@ -43,7 +43,7 @@ public sealed class OscModuleRegistration
         ArgumentException.ThrowIfNullOrEmpty(segment, parameter);
         if (segment.Any(character => char.IsWhiteSpace(character) || char.IsControl(character) ||
                                      "/#*,?[]{}".Contains(character)))
-            throw new ArgumentException("Укажи один сегмент OSC без пробелов и шаблонов.", parameter);
+            throw new ArgumentException("Требуется один сегмент OSC без пробелов и шаблонов.", parameter);
     }
 }
 

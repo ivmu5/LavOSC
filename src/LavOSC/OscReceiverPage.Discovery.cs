@@ -38,11 +38,11 @@ internal sealed partial class OscReceiverPage
                 return;
 
             discoveryStatus.TextColor = Muted;
-            discoveryStatus.Text = "Объявляю OSC-порт через Zeroconf…";
+            discoveryStatus.Text = "Регистрация Zeroconf…";
             advertisement = new OscHostAdvertisement(listeningPort);
             await advertisement.WaitUntilRegisteredAsync();
             if (version == advertisementVersion && !closed)
-                discoveryStatus.Text = "Zeroconf: LavOSC доступен в TouchOSC → Browse";
+                discoveryStatus.Text = "Обнаружение Zeroconf активно.";
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException or
             DllNotFoundException or EntryPointNotFoundException)
@@ -51,7 +51,7 @@ internal sealed partial class OscReceiverPage
             {
                 discoveryStatus.IsVisible = port.HasValue;
                 discoveryStatus.TextColor = Warning;
-                discoveryStatus.Text = $"Zeroconf недоступен. Укажи IP вручную. {exception.Message}";
+                discoveryStatus.Text = $"Zeroconf недоступен. Возможно подключение по IP. {exception.Message}";
             }
         }
     }
