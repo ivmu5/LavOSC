@@ -7,7 +7,8 @@ namespace Laveyana.LavOSC;
 internal static class FeedbackDelivery
 {
     public static async Task<(int PacketsSent, string? Error)> SendAsync(UdpClient udp, IReadOnlyList<IPEndPoint> recipients,
-        IReadOnlyList<(string Name, IOscFeedbackSource Source)> sources, CancellationToken token)
+        IReadOnlyList<(string Name, IOscFeedbackSource Source)> sources, CancellationToken token,
+        Action<IPEndPoint, int?, string, IReadOnlyList<object?>>? onSent = null)
     {
         string? error = null;
         int packetsSent = 0;
@@ -19,12 +20,14 @@ internal static class FeedbackDelivery
                 foreach (OscFeedback message in source.GetFeedback())
                 {
                     byte[] packet = message.Encode(name);
+                    string? address = onSent is null ? null : message.GetAddress(name);
                     foreach (IPEndPoint client in recipients)
                     {
                         try
                         {
                             await udp.SendAsync(packet.AsMemory(), client, token).ConfigureAwait(false);
                             packetsSent++;
+                            onSent?.Invoke(client, (udp.Client.LocalEndPoint as IPEndPoint)?.Port, address!, message.Arguments);
                         }
                         catch (SocketException exception)
                         {

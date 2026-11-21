@@ -12,15 +12,22 @@ public sealed class OscUdpReceiver : IDisposable
 {
     private readonly object gate = new();
     private readonly OscRouter router;
+    private readonly Action<OscEnvelope, int>? onMessageReceived;
     private readonly UdpClient listener;
     private readonly CancellationTokenSource stopping = new();
     private readonly HashSet<string> clientAddresses = new(StringComparer.Ordinal);
     private OscReceiverSnapshot snapshot;
 
-    public OscUdpReceiver(int port, OscRouter router)
+    public OscUdpReceiver(int port, OscRouter router) : this(port, router, null)
+    {
+    }
+
+    /// <summary>The optional observer runs on the receive loop and receives the local UDP port.</summary>
+    public OscUdpReceiver(int port, OscRouter router, Action<OscEnvelope, int>? onMessageReceived)
     {
         ArgumentNullException.ThrowIfNull(router);
         this.router = router;
+        this.onMessageReceived = onMessageReceived;
         listener = new UdpClient(AddressFamily.InterNetwork);
         try
         {
@@ -82,6 +89,7 @@ public sealed class OscUdpReceiver : IDisposable
                 {
                 }
 
+                int localPort;
                 lock (gate)
                 {
                     if (!snapshot.Listening)
@@ -95,11 +103,26 @@ public sealed class OscUdpReceiver : IDisposable
                         LastSender = sender,
                         LastAddress = messages is { Count: > 0 } ? messages[^1].Address : snapshot.LastAddress
                     };
+                    localPort = snapshot.Port;
                     if (messages is { Count: > 0 })
                     {
                         clientAddresses.Add(sender.IpAddress);
-                        foreach (var message in messages)
+                        foreach (OscMessage message in messages)
                             router.Dispatch(new(message, sender, received));
+                    }
+                }
+
+                if (messages is null || onMessageReceived is null)
+                    continue;
+                foreach (OscMessage message in messages)
+                {
+                    try
+                    {
+                        onMessageReceived(new(message, sender, received), localPort);
+                    }
+                    catch (Exception error)
+                    {
+                        Trace.TraceWarning("OSC receive observer failed: {0}", error.Message);
                     }
                 }
             }
