@@ -72,6 +72,12 @@ internal sealed partial class OscReceiverPage
         };
         var pages = new Grid();
         openCatalogModule = entry => Show(catalog, entry);
+        openClient = client =>
+        {
+            Show(clientsView);
+            clientsList.SelectedItem = client;
+            clientsList.ScrollTo(client, position: ScrollToPosition.MakeVisible, animate: false);
+        };
         for (int index = 0; index < sections.Length; index++)
         {
             var (page, button) = sections[index];
@@ -101,6 +107,8 @@ internal sealed partial class OscReceiverPage
                 FilterModules(selectedModule);
             else if (page == dashboard)
                 ShowPinnedModules();
+            else if (page == clientsView)
+                RefreshClientTraffic();
         }
 
         var layout = new Grid

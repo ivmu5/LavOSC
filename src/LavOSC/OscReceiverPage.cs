@@ -201,7 +201,7 @@ internal sealed partial class OscReceiverPage : ContentPage
                     AttachWheel();
                 if (pedalsModule.IsEnabled)
                     AttachPedals();
-                receiver = new OscUdpReceiver(value, router);
+                receiver = new OscUdpReceiver(value, router, clientTraffic.Received);
                 AdvertiseHost(receiver.Snapshot().Port);
                 Preferences.Default.Set("OscPort", value);
             }

@@ -8,10 +8,16 @@ public sealed record OscFeedback(string Name, IReadOnlyList<object?> Arguments)
     /// <summary>Sends on /module/name instead of /module/feedback/name.</summary>
     public bool UseCommandAddress { get; init; }
 
-    public byte[] Encode(string module)
+    public string GetAddress(string module)
     {
         OscModuleRegistration.ValidateSegment(module, nameof(module));
         OscModuleRegistration.ValidateSegment(Name, nameof(Name));
+        return UseCommandAddress ? $"/{module}/{Name}" : $"/{module}/feedback/{Name}";
+    }
+
+    public byte[] Encode(string module)
+    {
+        string address = GetAddress(module);
         var tags = new StringBuilder(",");
         foreach (object? argument in Arguments)
             tags.Append(argument switch
@@ -22,7 +28,7 @@ public sealed record OscFeedback(string Name, IReadOnlyList<object?> Arguments)
             });
 
         using var stream = new MemoryStream();
-        WriteString(stream, UseCommandAddress ? $"/{module}/{Name}" : $"/{module}/feedback/{Name}");
+        WriteString(stream, address);
         WriteString(stream, tags.ToString());
         Span<byte> bytes = stackalloc byte[8];
         foreach (object? argument in Arguments)

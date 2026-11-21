@@ -20,9 +20,15 @@ internal sealed partial class OscReceiverPage
     private readonly ObservableCollection<FeedbackClient> feedbackClients = [];
     private readonly HashSet<string> feedbackAddresses = new(StringComparer.Ordinal);
     private readonly Stopwatch clientDiscovery = Stopwatch.StartNew();
+    private readonly Stopwatch trafficRefresh = Stopwatch.StartNew();
+    private readonly ClientTrafficLog clientTraffic = new();
+    private readonly Label trafficCounts = Caption();
+    private readonly Label trafficHistory = Caption();
     private IPEndPoint[] feedbackRecipients = [];
     private Grid clientsView = null!;
     private CollectionView? dashboardClientList;
+    private CollectionView clientsList = null!;
+    private Action<FeedbackClient> openClient = null!;
     private IDispatcherTimer feedbackTimer = null!;
     private UdpClient? feedbackSocket;
     private bool publishingFeedback;
@@ -30,19 +36,30 @@ internal sealed partial class OscReceiverPage
     private Grid MakeClientsView()
     {
         var details = new ContentView();
-        var list = MakeClientsList(details, compact: false);
+        clientsList = MakeClientsList(details, compact: false);
+        var statistics = Card(new VerticalStackLayout
+        {
+            Spacing = 8,
+            Children = { Heading("Статистика за сеанс", 16), trafficCounts, Heading("Последние OSC-сообщения", 14), trafficHistory }
+        });
+        statistics.IsVisible = false;
+        clientsList.SelectionChanged += (_, _) =>
+        {
+            statistics.IsVisible = clientsList.SelectedItem is FeedbackClient;
+            RefreshClientTraffic();
+        };
         var left = new Grid
         {
             RowSpacing = 12,
             RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
         };
         left.Add(Heading("Клиенты", 27));
-        left.Add(list, 0, 1);
+        left.Add(clientsList, 0, 1);
         var view = MakeColumns();
         view.Add(left);
         view.Add(new ScrollView
         {
-            Content = new VerticalStackLayout { Spacing = 12, Children = { feedbackStatus, details } }
+            Content = new VerticalStackLayout { Spacing = 12, Children = { feedbackStatus, details, statistics } }
         }, 1);
         UpdateFeedbackStatus();
         return view;
@@ -81,12 +98,35 @@ internal sealed partial class OscReceiverPage
                 var address = Heading("", 16);
                 address.SetBinding(Label.TextProperty, nameof(FeedbackClient.Address));
                 var state = Caption();
-                state.SetBinding(Label.TextProperty, nameof(FeedbackClient.State));
-                var row = new VerticalStackLayout
+                state.SetBinding(Label.TextProperty, compact ? nameof(FeedbackClient.PortLabel) : nameof(FeedbackClient.State));
+                var info = new VerticalStackLayout { Spacing = 2, Children = { address, state } };
+                Layout row = info;
+                if (compact)
                 {
-                    BackgroundColor = Panel, Spacing = 2, Padding = new Thickness(12, 8),
-                    Margin = new Thickness(0, 0, 0, 2), Children = { address, state }
-                };
+                    var toggle = new Switch { OnColor = Accent, VerticalOptions = LayoutOptions.Center };
+                    toggle.SetBinding(Switch.IsToggledProperty, nameof(FeedbackClient.Enabled), BindingMode.OneWay);
+                    SemanticProperties.SetDescription(toggle, "Отправлять обратную связь клиенту");
+                    toggle.Toggled += (_, args) =>
+                    {
+                        if (toggle.BindingContext is FeedbackClient client && client.Enabled != args.Value)
+                        {
+                            client.Configure(client.Port, args.Value);
+                            SaveClients();
+                            UpdateFeedbackStatus();
+                        }
+                    };
+                    var doubleClick = new TapGestureRecognizer { NumberOfTapsRequired = 2 };
+                    doubleClick.Tapped += (_, _) =>
+                    {
+                        if (info.BindingContext is FeedbackClient client)
+                            openClient(client);
+                    };
+                    info.GestureRecognizers.Add(doubleClick);
+                    row = Row(info, toggle);
+                }
+                row.Padding = new Thickness(12, 8);
+                row.BackgroundColor = Panel;
+                row.Margin = new Thickness(0, 0, 0, 2);
                 VisualStateManager.SetVisualStateGroups(row, new VisualStateGroupList
                 {
                     new VisualStateGroup
@@ -121,6 +161,8 @@ internal sealed partial class OscReceiverPage
             new Binding(nameof(FeedbackClient.Port), BindingMode.OneWay, stringFormat: "{0}"));
         var enabled = new Switch { OnColor = Accent };
         enabled.SetBinding(Switch.IsToggledProperty, nameof(FeedbackClient.Enabled), BindingMode.OneWay);
+        var enabledRow = Row(Caption("Отправлять состояние"), enabled);
+        enabledRow.IsVisible = !compact;
         var save = MakeButton("Сохранить", primary: true);
         var status = Caption();
         status.IsVisible = false;
@@ -136,7 +178,7 @@ internal sealed partial class OscReceiverPage
                 return;
             }
 
-            client.Configure(port, enabled.IsToggled);
+            client.Configure(port, compact ? client.Enabled : enabled.IsToggled);
             SaveClients();
             UpdateFeedbackStatus();
             status.Text = "Настройки сохранены.";
@@ -149,7 +191,7 @@ internal sealed partial class OscReceiverPage
             Children =
             {
                 Heading(client.Address, compact ? 14 : 18), Field("Входящий UDP-порт", incomingPort),
-                Row(Caption("Отправлять состояние"), enabled), save, status
+                enabledRow, save, status
             }
         };
         return compact ? form : Card(form);
@@ -225,6 +267,23 @@ internal sealed partial class OscReceiverPage
         feedbackTimer.Start();
     }
 
+    private void RefreshClientTraffic()
+    {
+        if (clientsList.SelectedItem is not FeedbackClient client || activeSection != clientsView)
+            return;
+
+        var snapshot = clientTraffic.Snapshot(client.Address);
+        trafficCounts.Text = $"Принято OSC · {snapshot.Received:N0}    Отправлено OSC · {snapshot.Sent:N0}";
+        trafficHistory.Text = snapshot.Recent.Length == 0 ? "Сообщений пока нет." : string.Join("\n\n",
+            snapshot.Recent.Reverse().Select(entry =>
+            {
+                string remote = $"{client.Address}:{entry.RemotePort}";
+                string local = entry.LocalPort is int port ? $"LavOSC:{port}" : "LavOSC";
+                string route = entry.Sent ? $"{local} → {remote}" : $"{remote} → {local}";
+                return $"{entry.At:HH:mm:ss.fff} · {route}\n{entry.Address} {entry.Arguments}";
+            }));
+    }
+
     private async Task PublishFeedbackAsync()
     {
         if (closed)
@@ -233,6 +292,11 @@ internal sealed partial class OscReceiverPage
         {
             clientDiscovery.Restart();
             DiscoverClients();
+        }
+        if (trafficRefresh.Elapsed >= TimeSpan.FromMilliseconds(500))
+        {
+            trafficRefresh.Restart();
+            RefreshClientTraffic();
         }
 
         if (publishingFeedback || feedbackRecipients.Length == 0)
@@ -260,7 +324,8 @@ internal sealed partial class OscReceiverPage
         try
         {
             var udp = feedbackSocket ??= new UdpClient(AddressFamily.InterNetwork);
-            var (packetsSent, failure) = await Task.Run(() => FeedbackDelivery.SendAsync(udp, recipients, sources, token), token);
+            var (packetsSent, failure) = await Task.Run(() => FeedbackDelivery.SendAsync(udp, recipients, sources, token,
+                clientTraffic.Sent), token);
             if (!closed && ReferenceEquals(recipients, feedbackRecipients))
                 UpdateFeedbackStatus(failure, packetsSent);
         }
