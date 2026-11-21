@@ -268,6 +268,7 @@ internal sealed partial class OscReceiverPage
             {
                 entry.SetFeedback(!entry.FeedbackEnabled);
                 Preferences.Default.Set(entry.FeedbackKey, entry.FeedbackEnabled);
+                ConfigureFeedback();
             };
             body.Children.Add(feedback);
         }

@@ -14,12 +14,12 @@ public sealed record PedalSnapshot(double Throttle, double Brake, bool ThrottleF
 public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 {
     private const string ModuleName = "pedals";
-    private const string StateCommand = "state";
     private const string ThrottleCommand = "throttle";
     private const string BrakeCommand = "brake";
 
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan TickPeriod = TimeSpan.FromMilliseconds(16);
+    private static readonly IReadOnlyList<object?> Neutral = Array.AsReadOnly<object?>([0f]);
     private readonly object gate = new();
     private readonly Timer timer;
     private readonly Channel throttle = new();
@@ -31,19 +31,16 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     private bool disposed;
 
     public static IReadOnlyList<OscEndpoint> OscEndpoints { get; } = Array.AsReadOnly<OscEndpoint>([
-        new($"/{ModuleName}/{StateCommand}", OscEndpointDirection.Receive,
-            "Газ, тормоз · два аргумента float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{StateCommand} 0.65 0.0",
-            $"Через {Timeout.TotalMilliseconds:0} мс без данных значение соответствующего канала сбрасывается."),
         new($"/{ModuleName}/{ThrottleCommand}", OscEndpointDirection.Receive,
-            "Газ · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{ThrottleCommand} 0.65"),
+            "Газ · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{ThrottleCommand} 0.65",
+            $"Через {Timeout.TotalMilliseconds:0} мс без данных значение сбрасывается."),
         new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Receive,
-            "Тормоз · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{BrakeCommand} 0.25"),
+            "Тормоз · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{BrakeCommand} 0.25",
+            $"Через {Timeout.TotalMilliseconds:0} мс без данных значение сбрасывается."),
         new($"/{ModuleName}/{ThrottleCommand}", OscEndpointDirection.Send,
             "Текущее значение газа · один аргумент float32 в диапазоне 0–1."),
         new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Send,
-            "Текущее значение тормоза · один аргумент float32 в диапазоне 0–1."),
-        new($"/{ModuleName}/feedback/{StateCommand}", OscEndpointDirection.Send,
-            "Газ и тормоз от 0 до 1 (float32), затем свежий сигнал газа, свежий сигнал тормоза и активный выход vJoy (bool).")
+            "Текущее значение тормоза · один аргумент float32 в диапазоне 0–1.")
     ]);
 
     public string Name => ModuleName;
@@ -52,7 +49,6 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 
     void IOscModule.Configure(OscModuleRegistration registration)
     {
-        registration.OnCommand(StateCommand, command => Receive(command, throttle, brake));
         registration.OnCommand(ThrottleCommand, command => Receive(command, throttle));
         registration.OnCommand(BrakeCommand, command => Receive(command, brake));
     }
@@ -71,14 +67,12 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 
     public IReadOnlyList<OscFeedback> GetFeedback()
     {
-        PedalSnapshot state = Snapshot();
-        float gas = (float)state.Throttle;
-        float braking = (float)state.Brake;
-        return [
-            new(ThrottleCommand, [gas]) { UseCommandAddress = true },
-            new(BrakeCommand, [braking]) { UseCommandAddress = true },
-            new(StateCommand, [gas, braking, state.ThrottleFresh, state.BrakeFresh, state.OutputActive])
-        ];
+        lock (gate)
+        {
+            long now = Stopwatch.GetTimestamp();
+            return [throttle.Feedback(ThrottleCommand, sender, !disposed && throttle.IsFresh(now)),
+                brake.Feedback(BrakeCommand, sender, !disposed && brake.IsFresh(now))];
+        }
     }
 
     public void EnableOutput(Func<IPedalOutput> acquire)
@@ -106,8 +100,8 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
                 throw;
             }
 
-            throttle.Position = 0;
-            brake.Position = 0;
+            throttle.ResetPosition();
+            brake.ResetPosition();
             lastTick = Stopwatch.GetTimestamp();
             output = candidate;
             notice = null;
@@ -133,14 +127,11 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
         }
     }
 
-    private void Receive(OscCommand command, Channel first, Channel? second = null)
+    private void Receive(OscCommand command, Channel channel)
     {
         var envelope = command.Envelope;
         var arguments = envelope.Message.Arguments;
-        double nextSecond = 0;
-        if (command.PathData.Count != 0 || arguments.Count != (second is null ? 1 : 2) ||
-            !TryReadPosition(arguments[0], out var nextFirst) ||
-            (second is not null && !TryReadPosition(arguments[1], out nextSecond)))
+        if (command.PathData.Count != 0 || arguments.Count != 1 || !TryReadPosition(arguments[0], out var next))
             return;
 
         lock (gate)
@@ -154,8 +145,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
                 StopOutput("Сигнал потерян. После восстановления требуется повторное включение педалей.");
 
             sender ??= envelope.Sender.IpAddress;
-            first.SetTarget(nextFirst, envelope.ReceivedTimestamp);
-            second?.SetTarget(nextSecond, envelope.ReceivedTimestamp);
+            channel.SetTarget(next, envelope.ReceivedTimestamp);
         }
     }
 
@@ -236,16 +226,34 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     {
         private long? timestamp;
         private double target;
+        private bool targetFromClient;
 
-        public double Position { get; set; }
+        public double Position { get; private set; }
 
         public bool IsFresh(long now) => timestamp is { } received &&
             Stopwatch.GetElapsedTime(received, now) < Timeout;
+
+        public OscFeedback Feedback(string name, string? sender, bool fresh) => new(name, [fresh ? (float)Position : 0f])
+        {
+            UseCommandAddress = true,
+            InitialArguments = Neutral,
+            Origin = sender is not null && timestamp is long received
+                ? new(sender, received, [(float)target], SuppressEcho: fresh && targetFromClient)
+                : null
+        };
 
         public void SetTarget(double value, long received)
         {
             target = value;
             timestamp = received;
+            targetFromClient = true;
+        }
+
+        public void ResetPosition()
+        {
+            if (Position != 0)
+                targetFromClient = false;
+            Position = 0;
         }
 
         public bool Advance(bool fresh, double ratio)

@@ -7,7 +7,6 @@ using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Dispatching;
 using Microsoft.Maui.Storage;
-using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace Laveyana.LavOSC;
 
@@ -19,19 +18,15 @@ internal sealed partial class OscReceiverPage
     private readonly Label dashboardFeedbackStatus = Caption();
     private readonly ObservableCollection<FeedbackClient> feedbackClients = [];
     private readonly HashSet<string> feedbackAddresses = new(StringComparer.Ordinal);
-    private readonly Stopwatch clientDiscovery = Stopwatch.StartNew();
-    private readonly Stopwatch trafficRefresh = Stopwatch.StartNew();
     private readonly ClientTrafficLog clientTraffic = new();
     private readonly Label trafficCounts = Caption();
     private readonly Label trafficHistory = Caption();
-    private IPEndPoint[] feedbackRecipients = [];
     private Grid clientsView = null!;
     private CollectionView? dashboardClientList;
     private CollectionView clientsList = null!;
     private Action<FeedbackClient> openClient = null!;
-    private IDispatcherTimer feedbackTimer = null!;
-    private UdpClient? feedbackSocket;
-    private bool publishingFeedback;
+    private IDispatcherTimer clientTimer = null!;
+    private FeedbackDelivery? feedbackDelivery;
 
     private Grid MakeClientsView()
     {
@@ -112,7 +107,6 @@ internal sealed partial class OscReceiverPage
                         {
                             client.Configure(client.Port, args.Value);
                             SaveClients();
-                            UpdateFeedbackStatus();
                         }
                     };
                     var doubleClick = new TapGestureRecognizer { NumberOfTapsRequired = 2 };
@@ -180,7 +174,6 @@ internal sealed partial class OscReceiverPage
 
             client.Configure(port, compact ? client.Enabled : enabled.IsToggled);
             SaveClients();
-            UpdateFeedbackStatus();
             status.Text = "Настройки сохранены.";
             status.TextColor = Accent;
             status.IsVisible = true;
@@ -209,7 +202,6 @@ internal sealed partial class OscReceiverPage
         {
             // The list can be reconstructed from new OSC traffic.
         }
-        UpdateRecipients();
     }
 
     private bool AddClient(string address, int port, bool enabled)
@@ -242,29 +234,38 @@ internal sealed partial class OscReceiverPage
     {
         var settings = feedbackClients.Select(client => new ClientSettings(client.Address, client.Port, client.Enabled)).ToArray();
         Preferences.Default.Set(ClientsKey, JsonSerializer.Serialize(settings));
-        UpdateRecipients();
+        ConfigureFeedback();
     }
 
-    private void UpdateRecipients() => feedbackRecipients = feedbackClients.Where(client => client.Enabled)
-        .Select(client => client.EndPoint).ToArray();
-
-    private void UpdateFeedbackStatus(string? failure = null, int packetsSent = 0)
+    private void UpdateFeedbackStatus()
     {
-        feedbackStatus.TextColor = failure is null ? Muted : Warning;
-        feedbackStatus.Text = failure ?? (feedbackRecipients.Length == 0 ? "Нет получателей обратной связи."
-            : packetsSent == 0 ? "Нет исходящих OSC-пакетов."
-            : $"Получателей · {feedbackRecipients.Length} · UDP-пакетов за цикл · {packetsSent}");
+        var state = feedbackDelivery?.Snapshot();
+        feedbackStatus.TextColor = state?.Failure is not null ? Warning : Muted;
+        feedbackStatus.Text = state switch
+        {
+            { Failure: { } failure } => failure,
+            null or { Recipients: 0 } => "Нет получателей обратной связи.",
+            { HasSources: false } => "Обратная связь модулей неактивна.",
+            _ => $"Получателей · {state.Recipients} · Отправлено UDP-пакетов за сеанс · {state.PacketsSent:N0}"
+        };
         dashboardFeedbackStatus.TextColor = feedbackStatus.TextColor;
         dashboardFeedbackStatus.Text = feedbackStatus.Text;
-        dashboardFeedbackStatus.IsVisible = failure is not null || feedbackRecipients.Length > 0;
+        dashboardFeedbackStatus.IsVisible = state is { Recipients: > 0 };
     }
 
-    private void StartFeedbackTimer()
+    private void StartClientMonitoring()
     {
-        feedbackTimer = Dispatcher.CreateTimer();
-        feedbackTimer.Interval = TimeSpan.FromMilliseconds(100);
-        feedbackTimer.Tick += async (_, _) => await PublishFeedbackAsync();
-        feedbackTimer.Start();
+        feedbackDelivery = new(clientTraffic.Sent);
+        ConfigureFeedback();
+        clientTimer = Dispatcher.CreateTimer();
+        clientTimer.Interval = TimeSpan.FromMilliseconds(500);
+        clientTimer.Tick += (_, _) =>
+        {
+            DiscoverClients();
+            UpdateFeedbackStatus();
+            RefreshClientTraffic();
+        };
+        clientTimer.Start();
     }
 
     private void RefreshClientTraffic()
@@ -284,25 +285,11 @@ internal sealed partial class OscReceiverPage
             }));
     }
 
-    private async Task PublishFeedbackAsync()
+    private void ConfigureFeedback()
     {
-        if (closed)
-            return;
-        if (clientDiscovery.Elapsed >= TimeSpan.FromSeconds(1))
-        {
-            clientDiscovery.Restart();
-            DiscoverClients();
-        }
-        if (trafficRefresh.Elapsed >= TimeSpan.FromMilliseconds(500))
-        {
-            trafficRefresh.Restart();
-            RefreshClientTraffic();
-        }
-
-        if (publishingFeedback || feedbackRecipients.Length == 0)
+        if (closed || feedbackDelivery is null)
             return;
 
-        IPEndPoint[] recipients = feedbackRecipients;
         var sources = new List<(string Name, IOscFeedbackSource Source)>();
         foreach (ModuleEntry module in moduleEntries)
         {
@@ -313,31 +300,8 @@ internal sealed partial class OscReceiverPage
             if (source is not null)
                 sources.Add((module.Name, source));
         }
-        if (sources.Count == 0)
-        {
-            UpdateFeedbackStatus("Обратная связь модулей неактивна.");
-            return;
-        }
-
-        publishingFeedback = true;
-        CancellationToken token = lifetime.Token;
-        try
-        {
-            var udp = feedbackSocket ??= new UdpClient(AddressFamily.InterNetwork);
-            var (packetsSent, failure) = await Task.Run(() => FeedbackDelivery.SendAsync(udp, recipients, sources, token,
-                clientTraffic.Sent), token);
-            if (!closed && ReferenceEquals(recipients, feedbackRecipients))
-                UpdateFeedbackStatus(failure, packetsSent);
-        }
-        catch (Exception exception) when (exception is SocketException or OperationCanceledException or ObjectDisposedException)
-        {
-            if (!closed)
-                UpdateFeedbackStatus(exception.Message);
-        }
-        finally
-        {
-            publishingFeedback = false;
-        }
+        feedbackDelivery.Configure(feedbackClients.Where(client => client.Enabled).Select(client => client.EndPoint).ToArray(),
+            sources.ToArray());
     }
 
     private sealed record ClientSettings(string Address, int Port, bool Enabled);

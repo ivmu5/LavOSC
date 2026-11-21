@@ -171,6 +171,7 @@ internal sealed partial class OscReceiverPage
 
         entry.SetEnabled(enabled);
         Preferences.Default.Set(entry.EnabledKey, enabled);
+        ConfigureFeedback();
         Refresh();
         if (entry == wheelModule && armAfterCalibration)
             await PrepareVJoyAsync(arm: false);

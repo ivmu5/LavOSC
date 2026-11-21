@@ -149,7 +149,7 @@ internal sealed partial class OscReceiverPage : ContentPage
             }
         };
         timer.Start();
-        StartFeedbackTimer();
+        StartClientMonitoring();
         Loaded += async (_, _) =>
         {
             if (initialized || closed)
@@ -172,9 +172,9 @@ internal sealed partial class OscReceiverPage : ContentPage
 
         closed = true;
         timer.Stop();
-        feedbackTimer.Stop();
+        clientTimer.Stop();
+        feedbackDelivery?.Dispose();
         lifetime.Cancel();
-        feedbackSocket?.Dispose();
         if (!working)
             lifetime.Dispose();
         StopListening();
@@ -212,6 +212,7 @@ internal sealed partial class OscReceiverPage : ContentPage
             }
         }
 
+        ConfigureFeedback();
         Refresh();
     }
 
