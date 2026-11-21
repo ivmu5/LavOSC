@@ -9,11 +9,12 @@ using Microsoft.Maui.Dispatching;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 using Laveyana.LavOSC.Core;
+using Laveyana.LavOSC.Modules.Pedals;
 using Laveyana.LavOSC.Modules.Wheel;
 
 namespace Laveyana.LavOSC;
 
-internal sealed class OscReceiverPage : ContentPage
+internal sealed partial class OscReceiverPage : ContentPage
 {
     private static readonly Color Canvas = Color.FromArgb("#111519");
     private static readonly Color Panel = Color.FromArgb("#1A2128");
@@ -53,18 +54,18 @@ internal sealed class OscReceiverPage : ContentPage
     private readonly Stopwatch rateClock = Stopwatch.StartNew();
     private readonly CancellationTokenSource lifetime = new();
     private readonly OscRouter router = new();
-    private readonly List<IDisposable> moduleRegistrations = [];
     private OscUdpReceiver? receiver;
     private IDisposable? wheelRegistration;
     private WheelSession? session;
     private long previousCount;
     private double frequency;
     private string? error;
-    private string? moduleRegistrationErrors;
     private string? vJoyError;
     private string? vJoyMessage;
     private VJoyScan? vJoyScan;
-    private int? selectedDevice;
+    private int? preparedDeviceId;
+    private int? wheelDeviceId;
+    private int? pedalDeviceId;
     private bool working;
     private bool initialized;
     private bool closed;
@@ -110,7 +111,9 @@ internal sealed class OscReceiverPage : ContentPage
                 await PrepareVJoyAsync(arm: true);
             Refresh();
         };
-        prepare.Clicked += async (_, _) => await PrepareVJoyAsync(arm: false);
+        prepare.Clicked += async (_, _) => await PrepareVJoyAsync(arm: false,
+            (wheelEnabled.IsToggled ? VJoyAxes.X : VJoyAxes.None) |
+            (pedalsEnabled.IsToggled ? VJoyAxes.Pedals : VJoyAxes.None));
         wheelEnabled.Toggled += async (_, args) =>
         {
             preferences.Set("WheelModuleEnabled", args.Value);
@@ -128,7 +131,6 @@ internal sealed class OscReceiverPage : ContentPage
             {
                 armAfterCalibration = false;
                 DetachWheel();
-                ClearPreparedDevice();
             }
             Refresh();
         };
@@ -150,13 +152,15 @@ internal sealed class OscReceiverPage : ContentPage
             ClearPreparedDevice();
         };
 
+        ConfigurePedalControls(preferences);
+
         var layout = new Grid
         {
             Padding = new Thickness(18),
             ColumnSpacing = 16,
             ColumnDefinitions = { new ColumnDefinition(new GridLength(360)), new ColumnDefinition(GridLength.Star) }
         };
-        layout.Add(new ScrollView { Content = MakeControls() }, 0, 0);
+        layout.Add(new ScrollView { Content = MakeControls(modules) }, 0, 0);
         layout.Add(new ScrollView { Content = MakeDiagnostics() }, 1, 0);
         Content = layout;
 
@@ -169,7 +173,10 @@ internal sealed class OscReceiverPage : ContentPage
             Refresh();
             if (armAfterCalibration && !working && !closed &&
                 session?.Snapshot() is { Fresh: true, Calibrated: true, OutputActive: false })
+            {
+                armAfterCalibration = false;
                 await PrepareVJoyAsync(arm: true);
+            }
         };
         timer.Start();
         Loaded += async (_, _) =>
@@ -178,7 +185,6 @@ internal sealed class OscReceiverPage : ContentPage
                 return;
 
             initialized = true;
-            RegisterModules(modules);
             ToggleListening();
             if (wheelEnabled.IsToggled && autoSetup.IsToggled)
             {
@@ -199,39 +205,15 @@ internal sealed class OscReceiverPage : ContentPage
         if (!working)
             lifetime.Dispose();
         StopListening();
-        foreach (IDisposable registration in moduleRegistrations)
-            registration.Dispose();
-        moduleRegistrations.Clear();
+        CloseExtensionModules();
     }
 
-    private void RegisterModules(IReadOnlyList<IOscModule> modules)
-    {
-        var errors = new List<string>();
-        foreach (IOscModule module in modules)
-        {
-            try
-            {
-                if (module.Name is "wheel" or "whell")
-                    throw new InvalidOperationException("Адреса /wheel и /whell закреплены за модулем руля.");
-
-                moduleRegistrations.Add(router.Register(module));
-            }
-            catch (Exception exception)
-            {
-                errors.Add($"{module.GetType().Name}: {exception.Message}");
-            }
-        }
-
-        if (errors.Count > 0)
-            moduleRegistrationErrors = string.Join(Environment.NewLine, errors);
-    }
-
-    private View MakeControls()
+    private View MakeControls(IReadOnlyList<IOscModule> modules)
     {
         var reload = MakeButton("Обновить IP");
         reload.Clicked += (_, _) => ShowAddresses();
 
-        return new VerticalStackLayout
+        var controls = new VerticalStackLayout
         {
             Spacing = 12,
             Children =
@@ -261,6 +243,7 @@ internal sealed class OscReceiverPage : ContentPage
                         Row(Caption("Инверсия руля"), invert)
                     }
                 }),
+                MakePedalControls(),
                 Card(new VerticalStackLayout
                 {
                     Spacing = 8,
@@ -268,13 +251,16 @@ internal sealed class OscReceiverPage : ContentPage
                     {
                         Heading("vJoy", 18),
                         Row(Caption("Автоподготовка при запуске"), autoSetup),
-                        Field("Устройство с осью X", device),
+                        Field("Устройство vJoy", device),
                         Field("Путь к vJoyInterface.dll", dllPath),
                         prepare
                     }
                 })
             }
         };
+        if (modules.Count > 0)
+            controls.Children.Add(MakeExtensionModules(modules));
+        return controls;
     }
 
     private View MakeDiagnostics() => new VerticalStackLayout
@@ -302,6 +288,7 @@ internal sealed class OscReceiverPage : ContentPage
                     notice
                 }
             }),
+            MakePedalDiagnostics(),
             Card(new VerticalStackLayout
             {
                 Spacing = 7,
@@ -328,6 +315,8 @@ internal sealed class OscReceiverPage : ContentPage
             {
                 if (wheelEnabled.IsToggled)
                     AttachWheel();
+                if (pedalsEnabled.IsToggled)
+                    AttachPedals();
                 receiver = new OscUdpReceiver(value, router);
                 Preferences.Default.Set("OscPort", value);
             }
@@ -361,6 +350,7 @@ internal sealed class OscReceiverPage : ContentPage
         receiver?.Dispose();
         receiver = null;
         DetachWheel();
+        DetachPedals();
     }
 
     private void DetachWheel()
@@ -369,107 +359,20 @@ internal sealed class OscReceiverPage : ContentPage
         wheelRegistration = null;
         session?.Dispose();
         session = null;
+        wheelDeviceId = null;
         previousCount = 0;
         frequency = 0;
         rateClock.Restart();
     }
 
-    private async Task PrepareVJoyAsync(bool arm)
-    {
-        if (working || closed || !wheelEnabled.IsToggled || session?.Snapshot().OutputActive == true)
-            return;
-
-        working = true;
-        vJoyError = null;
-        vJoyMessage = "Поиск установленного vJoy…";
-        selectedDevice = null;
-        vJoyScan = null;
-        Refresh();
-        var token = lifetime.Token;
-        try
-        {
-            var options = new VJoySetupOptions(dllPath.Text, Math.Max(0, device.SelectedIndex),
-                Preferences.Default.Get("VJoyDevice", 0));
-            var progress = new Progress<VJoyProgress>(update =>
-            {
-                if (closed || !working)
-                    return;
-                vJoyMessage = update.Message;
-                vJoyScan = update.Scan;
-                Refresh();
-            });
-            var prepared = await Task.Run(() => VJoySetup.PrepareAsync(options, progress, token), token);
-            if (closed)
-                return;
-
-            vJoyScan = prepared.Scan;
-            selectedDevice = prepared.Id;
-            vJoyMessage = prepared.Created ? $"Создано устройство №{prepared.Id} · ось X" :
-                $"Выбрано устройство №{prepared.Id} · ось X";
-
-            if (session is { } current &&
-                (arm || armAfterCalibration) &&
-                current.Snapshot() is { Fresh: true, Calibrated: true })
-            {
-                armAfterCalibration = false;
-                vJoyMessage = $"Подключение к устройству №{prepared.Id}…";
-                Refresh();
-                await AttachAsync(current, prepared, token);
-                vJoyMessage = $"Устройство №{prepared.Id} · ось X";
-            }
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or
-            UnauthorizedAccessException or IOException or System.Security.SecurityException)
-        {
-            vJoyError = exception.Message;
-            armAfterCalibration = false;
-        }
-        finally
-        {
-            working = false;
-            if (closed)
-                lifetime.Dispose();
-            else
-                Refresh();
-        }
-    }
-
-    private async Task AttachAsync(WheelSession current, VJoyPreparation prepared, CancellationToken token)
-    {
-        VJoyOutput? pending = await Task.Run(() => VJoyOutput.Connect((uint)prepared.Id, prepared.Scan.DllPath), token);
-        try
-        {
-            if (closed || !ReferenceEquals(session, current))
-                return;
-
-            current.EnableOutput(() => pending);
-            pending = null;
-            Preferences.Default.Set("VJoyDevice", prepared.Id);
-        }
-        finally
-        {
-            pending?.Dispose();
-        }
-    }
-
-    private void ClearPreparedDevice()
-    {
-        selectedDevice = null;
-        vJoyError = null;
-        vJoyMessage = null;
-        vJoyScan = null;
-        Refresh();
-    }
-
     private void Refresh()
     {
         WheelSnapshot? snapshot = session?.Snapshot();
+        PedalSnapshot? pedalSnapshot = pedals?.Snapshot();
         bool receiving = snapshot?.Fresh == true;
         bool calibrated = snapshot?.Calibrated == true;
         bool active = snapshot?.OutputActive == true;
+        bool pedalsActive = pedalSnapshot?.OutputActive == true;
         if (rateClock.Elapsed.TotalSeconds >= 1)
         {
             long count = snapshot?.Samples ?? 0;
@@ -492,21 +395,18 @@ internal sealed class OscReceiverPage : ContentPage
         });
         networkStatus.TextColor = error is not null || input?.Error is not null ? Warning
             : input?.LastSender is not null ? Accent : Muted;
-        routingStatus.IsVisible = moduleRegistrationErrors is not null ||
-            routing.DroppedDeliveries > 0 || routing.HandlerErrors > 0;
+        routingStatus.IsVisible = routing.DroppedDeliveries > 0 || routing.HandlerErrors > 0;
         routingStatus.TextColor = Warning;
         routingStatus.Text = $"Пропущено доставок: {routing.DroppedDeliveries:N0} · Ошибок модулей: {routing.HandlerErrors:N0}" +
-            (routing.LastHandlerError is { } handlerError ? $"\n{handlerError}" : "") +
-            (moduleRegistrationErrors is { } registrationErrors ? $"\nПодключение модулей:\n{registrationErrors}" : "");
+            (routing.LastHandlerError is { } handlerError ? $"\n{handlerError}" : "");
         sampleStatus.Text = receiving
             ? $"/accxyz · {snapshot!.Sender} · ≈ {frequency:F0} Гц"
             : "Ожидаю /accxyz";
-        vJoyStatus.Text = active ? $"●  Передача в vJoy №{selectedDevice} · ось X"
-            : vJoyError ?? vJoyMessage ?? "Ожидание настройки";
-        vJoyStatus.TextColor = active ? Accent : vJoyError is null ? Muted : Warning;
+        vJoyStatus.Text = vJoyError ?? vJoyMessage ?? "Ожидание настройки";
+        vJoyStatus.TextColor = vJoyError is not null ? Warning : active || pedalsActive ? Accent : Muted;
         vJoyLibrary.Text = vJoyScan?.DllPath ?? "";
         vJoyLibrary.IsVisible = vJoyScan is not null;
-        vJoyDevices.Text = DescribeDevices(vJoyScan, active);
+        vJoyDevices.Text = DescribeDevices(vJoyScan, active, pedalsActive);
         vJoyDevices.IsVisible = vJoyScan?.DriverEnabled == true;
         angle.Text = snapshot?.Angle is { } value ? $"{value:+0.0;-0.0;0.0}°" : "—°";
         axisValue.Text = calibrated && receiving ? $"{snapshot!.Position * 100:+0;-0;0}%" : "—%";
@@ -524,33 +424,14 @@ internal sealed class OscReceiverPage : ContentPage
             gaugeView.Invalidate();
         }
         port.IsEnabled = input?.Listening != true;
-        wheelEnabled.IsEnabled = !working;
-        device.IsEnabled = wheelEnabled.IsToggled && !active && !working;
+        device.IsEnabled = !active && !pedalsActive && !working;
         dllPath.IsEnabled = device.IsEnabled;
-        prepare.IsEnabled = device.IsEnabled;
+        prepare.IsEnabled = device.IsEnabled && (wheelEnabled.IsToggled || pedalsEnabled.IsToggled);
         listen.Text = input?.Listening == true ? "Остановить приём" : "Начать приём";
         calibrate.IsEnabled = receiving;
         drive.IsEnabled = active || receiving && calibrated && !working;
         drive.Text = active ? "Выключить руль" : "Включить руль";
-    }
-
-    private string DescribeDevices(VJoyScan? scan, bool active)
-    {
-        if (scan?.DriverEnabled != true)
-            return "";
-
-        var devices = scan.Devices.Where(item => item.State != VJoyDeviceState.Missing).Select(item =>
-        {
-            string status = item.State switch
-            {
-                VJoyDeviceState.Free when item.Id == selectedDevice && active => "используется",
-                VJoyDeviceState.Free => "свободно при проверке",
-                VJoyDeviceState.Owned or VJoyDeviceState.Busy => "занято при проверке",
-                _ => "состояние неизвестно"
-            };
-            return $"№{item.Id} · {(item.HasXAxis ? "ось X" : "ось X недоступна")} · {status}";
-        }).ToArray();
-        return devices.Length == 0 ? "Виртуальные устройства отсутствуют" : string.Join(Environment.NewLine, devices);
+        RefreshPedals(pedalSnapshot);
     }
 
     private void ShowAddresses()

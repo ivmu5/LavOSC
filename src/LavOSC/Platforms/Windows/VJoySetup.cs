@@ -5,7 +5,8 @@ using Microsoft.Win32;
 
 namespace Laveyana.LavOSC;
 
-internal sealed record VJoySetupOptions(string? DllOverride, int RequestedId, int LastUsedId);
+internal sealed record VJoySetupOptions(string? DllOverride, int RequestedId, int PreferredId,
+    VJoyAxes RequiredAxes, bool AllowDeviceCreation);
 internal sealed record VJoyPreparation(VJoyScan Scan, int Id, bool Created);
 internal sealed record VJoyProgress(string Message, VJoyScan? Scan = null);
 
@@ -41,42 +42,47 @@ internal static class VJoySetup
             scan = recovery ?? throw new InvalidOperationException(DescribeUnavailableDriver(VJoyWindowsDevices.Read()));
         }
 
-        progress.Report(new("Поиск свободного устройства с осью X…", scan));
-        var available = SelectAvailable(scan.Devices, options.RequestedId, options.LastUsedId);
+        string requiredAxes = VJoyOutput.FormatAxes(options.RequiredAxes);
+        progress.Report(new($"Поиск доступных осей {requiredAxes}…", scan));
+        var available = SelectAvailable(scan.Devices, options);
         if (available is not null)
             return new(scan, available.Id, false);
+
+        if (!options.AllowDeviceCreation)
+            throw new InvalidOperationException($"Оси {requiredAxes} недоступны. Отключи активную передачу в vJoy " +
+                "перед созданием устройства или выбери устройство с нужными осями.");
 
         var empty = scan.Devices.FirstOrDefault(device => device.State == VJoyDeviceState.Missing &&
             (options.RequestedId == 0 || device.Id == options.RequestedId));
         if (empty is null)
         {
             if (options.RequestedId != 0)
-                throw new InvalidOperationException($"Устройство №{options.RequestedId} занято или у него нет оси X. " +
-                    "Выбери другой номер или «Автоматически».");
+                throw new InvalidOperationException($"Устройство №{options.RequestedId} занято или у него нет осей {requiredAxes}. " +
+                    "Проверь его в Configure vJoy, выбери другой номер или «Автоматически».");
 
-            throw new InvalidOperationException("Нет свободного устройства vJoy с осью X и свободного номера для создания.");
+            throw new InvalidOperationException($"Нет свободных осей {requiredAxes} и свободного номера для создания устройства.");
         }
 
         string path = scan.DllPath;
-        progress.Report(new($"Создание устройства №{empty.Id} с осью X…", scan));
+        progress.Report(new($"Создание устройства №{empty.Id} с осями X, Y, Z…", scan));
         await ConfigureAsync(path, installed, cancellationToken, empty.Id.ToString(CultureInfo.InvariantCulture),
-            "-a", "x", "-b", "0").ConfigureAwait(false);
+            "-a", "x", "y", "z", "-b", "0").ConfigureAwait(false);
 
         scan = await WaitForAsync(() => VJoyOutput.Scan(path), state => state.DriverEnabled && state.Devices.Any(device =>
-                device.Id == empty.Id && device.HasXAxis), cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Устройство №{empty.Id} с осью X не появилось. " +
+                device.Id == empty.Id && (device.Axes & VJoyAxes.All) == VJoyAxes.All), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Устройство №{empty.Id} с осями X, Y, Z не появилось. " +
                 "Проверь этот номер в Configure vJoy.");
         progress.Report(new($"Проверка устройства №{empty.Id}…", scan));
-        if (SelectAvailable(scan.Devices, empty.Id, 0) is null)
-            throw new InvalidOperationException($"Устройство №{empty.Id} занято или ось X недоступна.");
+        if (SelectAvailable(scan.Devices, options with { RequestedId = empty.Id }) is null)
+            throw new InvalidOperationException($"Устройство №{empty.Id} занято или оси {requiredAxes} недоступны.");
 
         return new(scan, empty.Id, true);
     }
 
-    internal static VJoyDevice? SelectAvailable(IEnumerable<VJoyDevice> devices, int requestedId, int lastUsedId) =>
-        devices.Where(device => device.State == VJoyDeviceState.Free && device.HasXAxis &&
-                                (requestedId == 0 || device.Id == requestedId))
-            .OrderBy(device => device.Id != lastUsedId)
+    internal static VJoyDevice? SelectAvailable(IEnumerable<VJoyDevice> devices, VJoySetupOptions options) =>
+        devices.Where(device => (device.AvailableAxes & options.RequiredAxes) == options.RequiredAxes &&
+                                (options.RequestedId == 0 || device.Id == options.RequestedId))
+            .OrderBy(device => device.Id != options.PreferredId)
             .ThenBy(device => device.Id)
             .FirstOrDefault();
 
@@ -127,7 +133,7 @@ internal static class VJoySetup
             : null;
         if (tool is null)
             throw new InvalidOperationException("Не найден vJoyConfig.exe рядом с DLL установленного vJoy. " +
-                "Установи компонент Configure vJoy или подготовь ось X в Configure vJoy вручную.");
+                "Установи компонент Configure vJoy или настрой нужные оси вручную.");
 
         return RunElevatedAsync(tool, cancellationToken, arguments);
     }

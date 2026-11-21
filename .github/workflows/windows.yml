@@ -66,6 +66,7 @@ jobs:
           fi
           dotnet pack src/LavOSC.Core/LavOSC.Core.csproj -c Release -o artifacts/nuget "${options[@]}"
           dotnet pack src/LavOSC.Modules.Wheel/LavOSC.Modules.Wheel.csproj -c Release -o artifacts/nuget "${options[@]}"
+          dotnet pack src/LavOSC.Modules.Pedals/LavOSC.Modules.Pedals.csproj -c Release -o artifacts/nuget "${options[@]}"
       - uses: actions/upload-artifact@v7
         with:
           name: LavOSC-nuget

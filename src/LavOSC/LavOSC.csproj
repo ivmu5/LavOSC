@@ -26,6 +26,7 @@
     <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.120" />
     <ProjectReference Include="../LavOSC.Core/LavOSC.Core.csproj" />
     <ProjectReference Include="../LavOSC.Modules.Wheel/LavOSC.Modules.Wheel.csproj" />
+    <ProjectReference Include="../LavOSC.Modules.Pedals/LavOSC.Modules.Pedals.csproj" />
     <None Remove="Resources/AppIcon/lavosc.ico" />
     <Content Include="Resources/AppIcon/lavosc.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
