@@ -38,6 +38,10 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             "Газ · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{ThrottleCommand} 0.65"),
         new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Receive,
             "Тормоз · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{BrakeCommand} 0.25"),
+        new($"/{ModuleName}/{ThrottleCommand}", OscEndpointDirection.Send,
+            "Текущее значение газа · один аргумент float32 в диапазоне 0–1."),
+        new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Send,
+            "Текущее значение тормоза · один аргумент float32 в диапазоне 0–1."),
         new($"/{ModuleName}/feedback/{StateCommand}", OscEndpointDirection.Send,
             "Газ и тормоз от 0 до 1 (float32), затем свежий сигнал газа, свежий сигнал тормоза и активный выход vJoy (bool).")
     ]);
@@ -68,8 +72,13 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     public IReadOnlyList<OscFeedback> GetFeedback()
     {
         PedalSnapshot state = Snapshot();
-        return [new(StateCommand, [(float)state.Throttle, (float)state.Brake,
-            state.ThrottleFresh, state.BrakeFresh, state.OutputActive])];
+        float gas = (float)state.Throttle;
+        float braking = (float)state.Brake;
+        return [
+            new(ThrottleCommand, [gas]) { UseCommandAddress = true },
+            new(BrakeCommand, [braking]) { UseCommandAddress = true },
+            new(StateCommand, [gas, braking, state.ThrottleFresh, state.BrakeFresh, state.OutputActive])
+        ];
     }
 
     public void EnableOutput(Func<IPedalOutput> acquire)
