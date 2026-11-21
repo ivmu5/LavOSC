@@ -48,6 +48,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
     private OscFeedbackOrigin? freshOrigin;
     private OscFeedbackOrigin? calibrationOrigin;
     private bool disposed;
+    private bool outputPaused;
 
     public string Name => ModuleName;
 
@@ -69,9 +70,12 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
         {
             bool fresh = !disposed && steering.IsFresh(Stopwatch.GetElapsedTime(started));
             var (x, y, z) = steering.Axes;
+            string? status = notice ?? (outputPaused
+                ? "Ожидание /accxyz. Передача в vJoy возобновится автоматически."
+                : null);
             return new(sender, steering.SampleCount, fresh, steering.IsCalibrated,
                 output is not null, fresh ? steering.RelativeAngle : null,
-                fresh ? steering.Position(settings) : 0, x, y, z, notice);
+                fresh ? steering.Position(settings) : 0, x, y, z, status);
         }
     }
 
@@ -139,8 +143,10 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 
             output = acquire();
             notice = null;
-            CheckTimeout(Stopwatch.GetElapsedTime(started));
-            WritePosition(steering.Position(settings));
+            if (steering.IsFresh(Stopwatch.GetElapsedTime(started)))
+                WritePosition(steering.Position(settings));
+            else
+                CheckTimeout(Stopwatch.GetElapsedTime(started));
         }
     }
 
@@ -167,17 +173,8 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
     {
         lock (gate)
         {
-            if (disposed)
-                return;
-
-            try
-            {
+            if (!disposed)
                 CheckTimeout(Stopwatch.GetElapsedTime(started));
-            }
-            catch (Exception error)
-            {
-                notice = $"Не удалось завершить передачу в vJoy. {error.Message}";
-            }
         }
     }
 
@@ -202,6 +199,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             sender ??= envelope.Sender.IpAddress;
             UpdateAxesOrigins(before, ReadAxes(true), envelope, force: !wasFresh);
             freshOrigin = UpdateOrigin(freshOrigin, wasFresh, true, envelope);
+            outputPaused = false;
             WritePosition(steering.Position(settings));
         }
     }
@@ -255,26 +253,44 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 
     private void CheckTimeout(TimeSpan now)
     {
-        if (output is null || steering.IsFresh(now))
+        if (output is null || outputPaused || steering.IsFresh(now))
             return;
 
-        ReleaseOutput();
-        notice = "Сигнал потерян. После восстановления требуется повторное включение руля.";
+        WritePosition(0);
+        outputPaused = output is not null;
     }
 
     private void WritePosition(double position)
     {
-        if (output is null || output.TryWrite(position))
+        if (output is null)
             return;
 
-        ReleaseOutput();
-        notice = "vJoy отклонил команду. Требуется повторное включение руля.";
+        try
+        {
+            if (output.TryWrite(position))
+                return;
+            notice = "vJoy отклонил команду. Требуется повторное включение руля.";
+        }
+        catch (Exception error)
+        {
+            notice = $"Ошибка выхода руля. {error.Message}";
+        }
+
+        try
+        {
+            ReleaseOutput();
+        }
+        catch (Exception error)
+        {
+            notice += $" {error.Message}";
+        }
     }
 
     private void ReleaseOutput()
     {
         ISteeringOutput? previous = output;
         output = null;
+        outputPaused = false;
         if (previous is null)
             return;
 

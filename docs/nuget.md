@@ -8,6 +8,6 @@ Modules can implement `IOscFeedbackSource` to provide one `OscFeedback` per inde
 
 `Laveyana.LavOSC.Modules.Wheel` depends on Core. Its `WheelSession` uses `/accxyz` for steering and exposes `/wheel/calibrate`. Implement `ISteeringOutput` to connect it to your own output device. The LavOSC Windows application provides the vJoy adapter.
 
-`Laveyana.LavOSC.Modules.Pedals` depends on Core. Its `PedalSession` receives and reports `/pedals/throttle` and `/pedals/brake`, smooths both inputs and resets stale channels. Implement `IPedalOutput` for your own output device.
+`Laveyana.LavOSC.Modules.Pedals` depends on Core. Its `PedalSession` receives and reports `/pedals/throttle` and `/pedals/brake`. Clients can send `/pedals/heartbeat` when the faders only send on change. The session smooths both inputs, resets to neutral on timeout, and resumes writing to the output when commands arrive again. Implement `IPedalOutput` for your own output device.
 
 See the [LavOSC repository](https://github.com/ivmu5/LavOSC) for a module example, registration in the Windows application and instructions for running your own host.
