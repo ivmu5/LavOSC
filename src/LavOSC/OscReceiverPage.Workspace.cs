@@ -18,6 +18,7 @@ internal sealed partial class OscReceiverPage
     private View wheelSettings = null!;
     private Grid workspace = null!;
     private View? activeSection;
+    private Action<ModuleEntry> openCatalogModule = null!;
 
     internal void SetCaptionInset(double height) => workspace.Margin = new Thickness(0, height, 0, 0);
 
@@ -69,6 +70,7 @@ internal sealed partial class OscReceiverPage
             }
         };
         var pages = new Grid();
+        openCatalogModule = entry => Show(catalog, entry);
         for (int index = 0; index < sections.Length; index++)
         {
             var (page, button) = sections[index];
@@ -78,7 +80,7 @@ internal sealed partial class OscReceiverPage
             button.Clicked += (_, _) => Show(page);
         }
 
-        void Show(View page)
+        void Show(View page, ModuleEntry? selectedModule = null)
         {
             if (activeSection == page)
                 return;
@@ -95,7 +97,7 @@ internal sealed partial class OscReceiverPage
                 button.BackgroundColor = panel.IsVisible ? PulseVisuals.Selected : Colors.Transparent;
             }
             if (page == catalog)
-                FilterModules();
+                FilterModules(selectedModule);
             else if (page == dashboard)
                 ShowPinnedModules();
         }
@@ -197,9 +199,17 @@ internal sealed partial class OscReceiverPage
 
     private View MakePinnedCard(ModuleEntry entry)
     {
-        var title = Heading(entry.Title, 16);
+        var title = MakeButton(entry.Title);
+        title.FontSize = 16;
+        title.FontAttributes = FontAttributes.Bold;
+        title.TextColor = Accent;
+        title.BackgroundColor = Colors.Transparent;
+        title.Padding = new Thickness(0, 4);
+        title.HorizontalOptions = LayoutOptions.Start;
         title.LineBreakMode = LineBreakMode.TailTruncation;
         title.VerticalOptions = LayoutOptions.Center;
+        title.Clicked += (_, _) => openCatalogModule(entry);
+        SemanticProperties.SetDescription(title, $"Открыть модуль «{entry.Title}»");
         var state = MakeButton("");
         state.SetBinding(Button.TextProperty, nameof(ModuleEntry.State));
         state.TextColor = Muted;

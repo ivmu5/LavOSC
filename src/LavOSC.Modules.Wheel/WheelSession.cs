@@ -13,6 +13,21 @@ public sealed record WheelSnapshot(string? Sender, long Samples, bool Fresh, boo
 
 public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 {
+    private const string ModuleName = "wheel";
+    private const string AccelerationAddress = "/accxyz";
+    private const string CalibrateCommand = "calibrate";
+    private const string FeedbackState = "state";
+
+    public static IReadOnlyList<OscEndpoint> OscEndpoints { get; } = Array.AsReadOnly<OscEndpoint>([
+        new(AccelerationAddress, OscEndpointDirection.Receive, "X, Y, Z · три конечных числа float32 (OSC ,fff).",
+            $"{AccelerationAddress} 9.8 0.0 0.0"),
+        new($"/{ModuleName}/{CalibrateCommand}", OscEndpointDirection.Receive,
+            "Без аргументов, Impulse, bool true или число 1 (int32, int64, float32, float64). Значение 0 игнорируется.",
+            $"/{ModuleName}/{CalibrateCommand} 1", "Калибровка принимается с того же IPv4, что и сигнал акселерометра."),
+        new($"/{ModuleName}/feedback/{FeedbackState}", OscEndpointDirection.Send,
+            "Положение от −1 до 1 и угол в градусах (float32), затем свежий сигнал, калибровка и активный выход vJoy (bool).")
+    ]);
+
     private readonly object gate = new();
     private readonly long started = Stopwatch.GetTimestamp();
     private readonly Timer watchdog;
@@ -23,7 +38,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
     private string? notice;
     private bool disposed;
 
-    public string Name => "wheel";
+    public string Name => ModuleName;
 
     public WheelSession(SteeringSettings settings)
     {
@@ -33,8 +48,8 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 
     void IOscModule.Configure(OscModuleRegistration registration)
     {
-        registration.Subscribe("/accxyz", ReceiveAcceleration);
-        registration.OnCommand("calibrate", ReceiveCalibration);
+        registration.Subscribe(AccelerationAddress, ReceiveAcceleration);
+        registration.OnCommand(CalibrateCommand, ReceiveCalibration);
     }
 
     public WheelSnapshot Snapshot()
@@ -52,7 +67,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
     public IReadOnlyList<OscFeedback> GetFeedback()
     {
         WheelSnapshot state = Snapshot();
-        return [new("state", [(float)state.Position, (float)(state.Angle ?? 0),
+        return [new(FeedbackState, [(float)state.Position, (float)(state.Angle ?? 0),
             state.Fresh, state.Calibrated, state.OutputActive])];
     }
 

@@ -1,4 +1,6 @@
 using Laveyana.LavOSC.Core;
+using Laveyana.LavOSC.Modules.Pedals;
+using Laveyana.LavOSC.Modules.Wheel;
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Storage;
@@ -9,6 +11,7 @@ internal sealed partial class OscReceiverPage
 {
     private readonly List<ModuleEntry> moduleEntries = [];
     private readonly VerticalStackLayout moduleDetails = new() { Spacing = 12 };
+    private readonly ScrollView moduleDetailsScroll = new();
     private readonly SearchBar moduleSearch = new() { Placeholder = "Название или OSC-адрес", TextColor = Text, PlaceholderColor = Muted };
     private readonly Switch pinnedOnly = new() { OnColor = Accent };
     private readonly CollectionView moduleList = new() { SelectionMode = SelectionMode.Single };
@@ -59,7 +62,8 @@ internal sealed partial class OscReceiverPage
         listColumn.Add(moduleList, 0, 1);
         var view = MakeColumns();
         view.Add(listColumn);
-        view.Add(new ScrollView { Content = moduleDetails }, 1);
+        moduleDetailsScroll.Content = moduleDetails;
+        view.Add(moduleDetailsScroll, 1);
         return view;
     }
 
@@ -104,18 +108,23 @@ internal sealed partial class OscReceiverPage
         return row;
     }
 
-    private void FilterModules()
+    private void FilterModules(ModuleEntry? target = null)
     {
-        if (catalog?.IsVisible != true)
+        if (catalog?.IsVisible != true || updatingModuleList)
             return;
 
-        var selected = moduleList.SelectedItem as ModuleEntry;
-        string query = moduleSearch.Text?.Trim() ?? "";
-        var filtered = moduleEntries.Where(module => module.Matches(query, pinnedOnly.IsToggled)).ToArray();
+        var selected = target ?? moduleList.SelectedItem as ModuleEntry;
 
         updatingModuleList = true;
         try
         {
+            string query = moduleSearch.Text?.Trim() ?? "";
+            if (target is not null && !target.Matches(query, false))
+                moduleSearch.Text = query = "";
+            if (target is { IsPinned: false })
+                pinnedOnly.IsToggled = false;
+
+            var filtered = moduleEntries.Where(module => module.Matches(query, pinnedOnly.IsToggled)).ToArray();
             moduleList.ItemsSource = filtered;
             moduleList.SelectedItem = selected is not null && filtered.Contains(selected) ? selected : filtered.FirstOrDefault();
         }
@@ -124,6 +133,8 @@ internal sealed partial class OscReceiverPage
             updatingModuleList = false;
         }
         ShowModuleDetails();
+        if (target is not null && ReferenceEquals(moduleList.SelectedItem, target))
+            moduleList.ScrollTo(target, position: ScrollToPosition.MakeVisible, animate: false);
     }
 
     private void ShowModuleDetails()
@@ -136,6 +147,7 @@ internal sealed partial class OscReceiverPage
             return;
 
         moduleDetails.Children.Add(MakeModuleControls(entry));
+        moduleDetails.Children.Add(MakeOscReference(entry));
         if (entry == wheelModule)
         {
             moduleDetails.Children.Add(Card(detailsSlot = new ContentView { Content = wheelBody }));
@@ -145,6 +157,54 @@ internal sealed partial class OscReceiverPage
         {
             moduleDetails.Children.Add(Card(detailsSlot = new ContentView { Content = pedalsBody }));
         }
+        if (moduleDetailsScroll.ScrollY > 0)
+            _ = moduleDetailsScroll.ScrollToAsync(0, 0, animated: false);
+    }
+
+    private View MakeOscReference(ModuleEntry entry)
+    {
+        var reference = new VerticalStackLayout { Spacing = 10, Children = { Heading("OSC-адреса", 16) } };
+        IReadOnlyList<OscEndpoint> endpoints;
+        try
+        {
+            endpoints = entry == wheelModule ? WheelSession.OscEndpoints
+                : entry == pedalsModule ? PedalSession.OscEndpoints
+                : (entry.Extension as IOscEndpointDocumentation)?.Endpoints ?? [];
+        }
+        catch (Exception error)
+        {
+            reference.Children.Add(Caption($"Описание OSC-адресов недоступно. {error.Message}"));
+            return Card(reference);
+        }
+
+        if (endpoints.Count == 0)
+            reference.Children.Add(Caption("Модуль не предоставил описание OSC-адресов."));
+
+        foreach (var group in endpoints.GroupBy(endpoint => endpoint.Direction).OrderBy(group => group.Key))
+        {
+            reference.Children.Add(Heading(group.Key == OscEndpointDirection.Receive ? "Входящие" : "Обратная связь", 13));
+            foreach (OscEndpoint endpoint in group)
+            {
+                var address = Heading(endpoint.Address, 13);
+                address.FontFamily = "Consolas";
+                var details = new VerticalStackLayout { Spacing = 4, Children = { address } };
+                if (entry == wheelModule && endpoint.Direction == OscEndpointDirection.Receive &&
+                    endpoint.Address.StartsWith(entry.Address + "/", StringComparison.Ordinal))
+                    details.Children.Add(Caption($"Псевдоним · /{WheelAlias}{endpoint.Address[entry.Address.Length..]}"));
+                details.Children.Add(Caption(endpoint.Arguments));
+                if (endpoint.Example is { } example)
+                {
+                    var sample = Caption(example);
+                    sample.FontFamily = "Consolas";
+                    sample.TextColor = Accent;
+                    details.Children.Add(sample);
+                }
+                if (endpoint.Notes is { } notes)
+                    details.Children.Add(Caption(notes));
+                reference.Children.Add(details);
+            }
+        }
+        return Card(reference);
     }
 
     private View MakeModuleControls(ModuleEntry entry)
