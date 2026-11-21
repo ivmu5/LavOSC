@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -17,45 +16,21 @@ internal sealed partial class OscReceiverPage
     private const string ClientsKey = "OscFeedbackClients";
     private const int DefaultFeedbackPort = 9000;
     private readonly Label feedbackStatus = Caption();
+    private readonly Label dashboardFeedbackStatus = Caption();
     private readonly ObservableCollection<FeedbackClient> feedbackClients = [];
     private readonly HashSet<string> feedbackAddresses = new(StringComparer.Ordinal);
     private readonly Stopwatch clientDiscovery = Stopwatch.StartNew();
     private IPEndPoint[] feedbackRecipients = [];
     private Grid clientsView = null!;
+    private CollectionView? dashboardClientList;
     private IDispatcherTimer feedbackTimer = null!;
     private UdpClient? feedbackSocket;
     private bool publishingFeedback;
 
     private Grid MakeClientsView()
     {
-        LoadClients();
-        var list = new CollectionView
-        {
-            ItemsSource = feedbackClients,
-            SelectionMode = SelectionMode.Single,
-            ItemSizingStrategy = ItemSizingStrategy.MeasureFirstItem,
-            EmptyView = Caption("Клиенты OSC не обнаружены."),
-            ItemTemplate = new DataTemplate(() =>
-            {
-                var address = Heading("", 16);
-                address.SetBinding(Label.TextProperty, nameof(FeedbackClient.Address));
-                var state = Caption();
-                state.SetBinding(Label.TextProperty, nameof(FeedbackClient.State));
-                return new VerticalStackLayout
-                {
-                    BackgroundColor = Panel, Spacing = 2, Padding = new Thickness(12, 8),
-                    Margin = new Thickness(0, 0, 0, 2), Children = { address, state }
-                };
-            })
-        };
-
-        var details = new VerticalStackLayout { Spacing = 12 };
-        list.SelectionChanged += (_, _) =>
-        {
-            details.Children.Clear();
-            if (list.SelectedItem is FeedbackClient client)
-                details.Children.Add(MakeClientDetails(client));
-        };
+        var details = new ContentView();
+        var list = MakeClientsList(details, compact: false);
         var left = new Grid
         {
             RowSpacing = 12,
@@ -73,14 +48,84 @@ internal sealed partial class OscReceiverPage
         return view;
     }
 
-    private View MakeClientDetails(FeedbackClient client)
+    private View MakeDashboardClients()
+    {
+        var details = new ContentView();
+        var list = MakeClientsList(details, compact: true);
+        dashboardClientList = list;
+        list.SelectedItem = feedbackClients.FirstOrDefault();
+        var panel = new Grid
+        {
+            RowSpacing = 10,
+            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star), new RowDefinition(GridLength.Auto) }
+        };
+        panel.Add(Heading("Клиенты", 18));
+        panel.Add(list, 0, 1);
+        panel.Add(new VerticalStackLayout
+        {
+            Spacing = 8, Children = { details, dashboardFeedbackStatus }
+        }, 0, 2);
+        return Card(panel);
+    }
+
+    private CollectionView MakeClientsList(ContentView details, bool compact)
+    {
+        var list = new CollectionView
+        {
+            ItemsSource = feedbackClients,
+            SelectionMode = SelectionMode.Single,
+            ItemSizingStrategy = ItemSizingStrategy.MeasureFirstItem,
+            EmptyView = Caption("Клиенты OSC не обнаружены."),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var address = Heading("", 16);
+                address.SetBinding(Label.TextProperty, nameof(FeedbackClient.Address));
+                var state = Caption();
+                state.SetBinding(Label.TextProperty, nameof(FeedbackClient.State));
+                var row = new VerticalStackLayout
+                {
+                    BackgroundColor = Panel, Spacing = 2, Padding = new Thickness(12, 8),
+                    Margin = new Thickness(0, 0, 0, 2), Children = { address, state }
+                };
+                VisualStateManager.SetVisualStateGroups(row, new VisualStateGroupList
+                {
+                    new VisualStateGroup
+                    {
+                        Name = "CommonStates",
+                        States =
+                        {
+                            new VisualState { Name = "Normal" },
+                            new VisualState
+                            {
+                                Name = "Selected",
+                                Setters = { new Setter { Property = BackgroundColorProperty, Value = PulseVisuals.Selected } }
+                            }
+                        }
+                    }
+                });
+                return row;
+            })
+        };
+
+        list.SelectionChanged += (_, _) =>
+        {
+            details.Content = list.SelectedItem is FeedbackClient client ? MakeClientDetails(client, compact) : null;
+        };
+        return list;
+    }
+
+    private View MakeClientDetails(FeedbackClient client, bool compact)
     {
         var incomingPort = MakeEntry(Keyboard.Numeric);
-        incomingPort.Text = client.Port.ToString(CultureInfo.InvariantCulture);
-        var enabled = new Switch { IsToggled = client.Enabled, OnColor = Accent };
+        incomingPort.SetBinding(Entry.TextProperty,
+            new Binding(nameof(FeedbackClient.Port), BindingMode.OneWay, stringFormat: "{0}"));
+        var enabled = new Switch { OnColor = Accent };
+        enabled.SetBinding(Switch.IsToggledProperty, nameof(FeedbackClient.Enabled), BindingMode.OneWay);
         var save = MakeButton("Сохранить", primary: true);
         var status = Caption();
         status.IsVisible = false;
+        incomingPort.TextChanged += (_, _) => status.IsVisible = false;
+        enabled.Toggled += (_, _) => status.IsVisible = false;
         save.Clicked += (_, _) =>
         {
             if (!TryNumber(incomingPort.Text, 1, 65535, out int port))
@@ -98,15 +143,16 @@ internal sealed partial class OscReceiverPage
             status.TextColor = Accent;
             status.IsVisible = true;
         };
-        return Card(new VerticalStackLayout
+        var form = new VerticalStackLayout
         {
-            Spacing = 8,
+            BindingContext = client, Spacing = 8,
             Children =
             {
-                Heading(client.Address, 18), Field("Входящий порт клиента", incomingPort),
+                Heading(client.Address, compact ? 14 : 18), Field("Входящий UDP-порт", incomingPort),
                 Row(Caption("Отправлять состояние"), enabled), save, status
             }
-        });
+        };
+        return compact ? form : Card(form);
     }
 
     private void LoadClients()
@@ -130,7 +176,10 @@ internal sealed partial class OscReceiverPage
             port is < 1 or > 65535 || !feedbackAddresses.Add(ip.ToString()))
             return false;
 
-        feedbackClients.Add(new FeedbackClient(ip, port, enabled));
+        var client = new FeedbackClient(ip, port, enabled);
+        feedbackClients.Add(client);
+        if (dashboardClientList is { SelectedItem: null } dashboardList)
+            dashboardList.SelectedItem = client;
         return true;
     }
 
@@ -162,6 +211,9 @@ internal sealed partial class OscReceiverPage
         feedbackStatus.TextColor = failure is null ? Muted : Warning;
         feedbackStatus.Text = failure ?? (feedbackRecipients.Length == 0 ? "Нет получателей обратной связи."
             : $"Получателей обратной связи · {feedbackRecipients.Length}");
+        dashboardFeedbackStatus.TextColor = feedbackStatus.TextColor;
+        dashboardFeedbackStatus.Text = feedbackStatus.Text;
+        dashboardFeedbackStatus.IsVisible = failure is not null || feedbackRecipients.Length > 0;
     }
 
     private void StartFeedbackTimer()

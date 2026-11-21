@@ -17,6 +17,8 @@ internal sealed class FeedbackClient(IPAddress address, int port, bool enabled) 
     {
         Port = port;
         Enabled = enabled;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Port)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Enabled)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(State)));
     }
 }

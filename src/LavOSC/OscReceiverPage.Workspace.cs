@@ -47,6 +47,7 @@ internal sealed partial class OscReceiverPage
         });
         pedalsBody = MakePedalBody();
 
+        LoadClients();
         var dashboard = MakeDashboard();
         catalog = MakeCatalog();
         clientsView = MakeClientsView();
@@ -124,7 +125,7 @@ internal sealed partial class OscReceiverPage
         return button;
     }
 
-    private ScrollView MakeDashboard()
+    private Grid MakeDashboard()
     {
         var reload = MakeButton("Обновить IP");
         reload.Clicked += (_, _) => ShowAddresses();
@@ -145,7 +146,7 @@ internal sealed partial class OscReceiverPage
                 Children = { Heading("vJoy", 16), vJoyStatus, vJoyDevices, vJoyLibrary }
             })
         ]);
-        return new ScrollView
+        var content = new ScrollView
         {
             Content = new VerticalStackLayout
             {
@@ -153,6 +154,21 @@ internal sealed partial class OscReceiverPage
                 Children = { Heading("Главная", 26), summaries, Heading("Закреплённые модули", 18), pinnedCards, emptyDashboard }
             }
         };
+        var clients = MakeDashboardClients();
+        var right = new ColumnDefinition(new GridLength(268));
+        var dashboard = new Grid
+        {
+            ColumnSpacing = 12,
+            ColumnDefinitions = { new ColumnDefinition(GridLength.Star), right }
+        };
+        dashboard.Add(content);
+        dashboard.Add(clients, 1);
+        dashboard.SizeChanged += (_, _) =>
+        {
+            if (dashboard.Width > 0)
+                right.Width = new GridLength(Math.Clamp(Math.Floor(dashboard.Width * .28), 250, 310));
+        };
+        return dashboard;
     }
 
     private ScrollView MakeSettings()
