@@ -148,14 +148,17 @@ git commit -m "Initial LavOSC release"
 gh repo create LavOSC --public --source=. --remote=origin --push
 ```
 
-После зелёной сборки на основной ветке отправь тег для первого релиза.
+GitHub Actions запускается вручную через **Actions → Windows → Run workflow**. Сборка сохраняет автономную версию для Windows x64 в артефактах запуска. Распакуй архив целиком и запусти `Laveyana.LavOSC.exe`.
+
+Чтобы собрать и опубликовать релиз, отправь тег формата `vMAJOR.MINOR.PATCH` и вручную запусти workflow для этого тега через GitHub CLI.
 
 ```powershell
 git tag -a v0.1.0 -m "LavOSC v0.1.0"
 git push origin v0.1.0
+gh workflow run windows.yml --ref v0.1.0
 ```
 
-GitHub Actions собирает автономную Windows x64 версию и выкладывает архив в артефакты сборки. Для тега `vMAJOR.MINOR.PATCH` тот же workflow создаёт GitHub Release с файлом `LavOSC-win-x64.zip`. Распакуй архив целиком и запусти `Laveyana.LavOSC.exe`.
+Этот запуск прикрепит `LavOSC-win-x64.zip` к GitHub Release для выбранного тега.
 
 Отдельное задание сохраняет `.nupkg` в артефакте `LavOSC-nuget`. При сборке по тегу версия пакетов берётся из тега. Публикация на NuGet выполняется командами выше.
 
