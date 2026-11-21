@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="src/LavOSC/LavOSC.csproj">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="src/LavOSC.Modules.Wheel/LavOSC.Modules.Wheel.csproj" />
+  <Project Path="src/LavOSC.Core/LavOSC.Core.csproj" />
+</Solution>

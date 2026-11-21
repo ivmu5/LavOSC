@@ -1,0 +1,98 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install MAUI for Windows
+        run: dotnet workload install maui-windows
+      - name: Publish LavOSC
+        shell: pwsh
+        run: |
+          $options = @()
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+              throw 'Use a release tag in the form vMAJOR.MINOR.PATCH.'
+            }
+            $version = $env:GITHUB_REF_NAME.Substring(1)
+            $options += "-p:Version=$version", "-p:ApplicationDisplayVersion=$version"
+          }
+          dotnet publish src/LavOSC/LavOSC.csproj -c Release -p:Platform=x64 --self-contained true -p:WindowsAppSDKSelfContained=true -o artifacts/publish @options
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path artifacts/publish/Laveyana.LavOSC.exe -PathType Leaf)) {
+            throw 'The published executable is missing.'
+          }
+          if (!(Test-Path artifacts/publish/Resources/AppIcon/lavosc.ico -PathType Leaf)) {
+            throw 'The published window icon is missing.'
+          }
+          Copy-Item LICENSE artifacts/publish/LICENSE.txt
+          Compress-Archive -Path artifacts/publish/* -DestinationPath artifacts/LavOSC-win-x64.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LavOSC-win-x64.zip
+          path: artifacts/LavOSC-win-x64.zip
+          if-no-files-found: error
+          archive: false
+
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Pack LavOSC libraries
+        shell: bash
+        run: |
+          options=()
+          if [[ "$GITHUB_REF_TYPE" == 'tag' ]]; then
+            options+=("-p:Version=${GITHUB_REF_NAME#v}")
+          fi
+          dotnet pack src/LavOSC.Core/LavOSC.Core.csproj -c Release -o artifacts/nuget "${options[@]}"
+          dotnet pack src/LavOSC.Modules.Wheel/LavOSC.Modules.Wheel.csproj -c Release -o artifacts/nuget "${options[@]}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LavOSC-nuget
+          path: artifacts/nuget/*.nupkg
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: LavOSC-win-x64.zip
+          path: artifacts
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/LavOSC-win-x64.zip \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            --title "LavOSC $GITHUB_REF_NAME"

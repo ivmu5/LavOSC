@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <Description>Accelerometer-based steering and calibration for LavOSC, with a pluggable steering output.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../LavOSC.Core/LavOSC.Core.csproj" />
+    <None Include="../../docs/nuget.md" Pack="true" PackagePath="README.md" />
+  </ItemGroup>
+</Project>

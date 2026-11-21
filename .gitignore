@@ -1,0 +1,21 @@
+# Visual Studio and local IDE state
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# .NET builds and local publish output
+[Bb]in/
+[Oo]bj/
+[Aa]rtifacts/
+[Pp]ublish/
+[Tt]est[Rr]esults/
+*.binlog
+*.msix
+*.msixbundle
+*.pfx
+
+# Windows
+Thumbs.db
+Desktop.ini
