@@ -7,8 +7,6 @@ namespace Laveyana.LavOSC;
 
 internal sealed partial class OscReceiverPage
 {
-    private readonly List<IDisposable> extensionRegistrations = [];
-    private readonly Switch pedalsEnabled = new() { OnColor = Accent };
     private readonly Button pedalDrive = MakeButton("Включить педали", primary: true);
     private readonly ProgressBar throttleBar = new() { ProgressColor = Accent };
     private readonly ProgressBar brakeBar = new() { ProgressColor = Warning };
@@ -18,19 +16,8 @@ internal sealed partial class OscReceiverPage
     private IDisposable? pedalRegistration;
     private PedalSession? pedals;
 
-    private void ConfigurePedalControls(IPreferences preferences)
+    private void ConfigurePedalControls()
     {
-        pedalsEnabled.IsToggled = preferences.Get("PedalsModuleEnabled", false);
-        pedalsEnabled.Toggled += (_, args) =>
-        {
-            preferences.Set("PedalsModuleEnabled", args.Value);
-            if (!args.Value)
-                DetachPedals();
-            else if (receiver?.Snapshot().Listening == true)
-                AttachPedals();
-            Refresh();
-        };
-
         pedalDrive.Clicked += async (_, _) =>
         {
             if (pedals?.Snapshot().OutputActive == true)
@@ -40,17 +27,6 @@ internal sealed partial class OscReceiverPage
             Refresh();
         };
     }
-
-    private View MakePedalControls() => Card(new VerticalStackLayout
-    {
-        Spacing = 8,
-        Children =
-        {
-            Heading("Педали · /pedals", 18),
-            Row(Caption("Модуль включён"), pedalsEnabled),
-            pedalDrive
-        }
-    });
 
     private View MakePedalDiagnostics() => Card(new VerticalStackLayout
     {
@@ -75,7 +51,7 @@ internal sealed partial class OscReceiverPage
         throttleValue.Text = snapshot is { ThrottleFresh: true } ? $"{snapshot.Throttle:P0}" : "—";
         brakeValue.Text = snapshot is { BrakeFresh: true } ? $"{snapshot.Brake:P0}" : "—";
         pedalStatus.Text = snapshot?.Notice ?? (active ? $"Передача в vJoy №{pedalDeviceId}"
-            : !pedalsEnabled.IsToggled ? "Модуль выключен"
+            : !pedalsModule.IsEnabled ? "Модуль выключен"
             : fresh ? $"Сигнал от {snapshot!.Sender} · можно включить педали" : "Ожидаю OSC на /pedals");
         pedalStatus.TextColor = snapshot?.Notice is not null ? Warning : active ? Accent : Muted;
         pedalDrive.IsEnabled = active || fresh && !working;
@@ -106,84 +82,102 @@ internal sealed partial class OscReceiverPage
         pedalDeviceId = null;
     }
 
-    private View MakeExtensionModules(IReadOnlyList<IOscModule> modules)
+    private void InitializeModules(IReadOnlyList<IOscModule> modules, IPreferences preferences)
     {
-        var controls = new VerticalStackLayout { Spacing = 8 };
-        controls.Children.Add(Heading("Дополнительные модули", 18));
-        var names = new HashSet<string>(StringComparer.Ordinal);
+        wheelModule = new("wheel", "Руль", "WheelModuleEnabled",
+            preferences.Get("WheelModuleEnabled", true), preferences.Get("OscModulePinned.wheel", true), supportsFeedback: true);
+        pedalsModule = new("pedals", "Педали", "PedalsModuleEnabled",
+            preferences.Get("PedalsModuleEnabled", false), preferences.Get("OscModulePinned.pedals", true), supportsFeedback: true);
+        moduleEntries.Add(wheelModule);
+        moduleEntries.Add(pedalsModule);
+
+        var names = new HashSet<string>(StringComparer.Ordinal) { "wheel", "whell", "pedals" };
+        var extensions = new List<ModuleEntry>(modules.Count);
         foreach (IOscModule module in modules)
         {
             try
             {
                 string name = module.Name;
-                if (name is "wheel" or "whell" or "pedals")
-                    throw new InvalidOperationException($"Адрес /{name} закреплён за встроенным модулем.");
-                if (!names.Add(name))
-                    throw new InvalidOperationException($"Имя /{name} уже используется другим модулем.");
+                if (string.IsNullOrWhiteSpace(name) || !names.Add(name))
+                    throw new InvalidOperationException($"Имя модуля «{name}» отсутствует или уже используется.");
 
-                var status = Caption();
-                status.TextColor = Warning;
-                var toggle = new Switch { OnColor = Accent };
-                var preferences = Preferences.Default;
-                string preference = $"OscModuleEnabled.{name}";
-                IDisposable? registration = null;
-
-                bool Enable()
-                {
-                    try
-                    {
-                        registration = router.Register(module);
-                        extensionRegistrations.Add(registration);
-                        status.IsVisible = false;
-                        return true;
-                    }
-                    catch (Exception exception)
-                    {
-                        status.Text = exception.Message;
-                        status.IsVisible = true;
-                        return false;
-                    }
-                }
-
-                status.IsVisible = false;
-                toggle.IsToggled = preferences.Get(preference, true) && Enable();
-                toggle.Toggled += (_, args) =>
-                {
-                    if (closed)
-                        return;
-
-                    if (args.Value && !Enable())
-                    {
-                        toggle.IsToggled = false;
-                        return;
-                    }
-
-                    if (!args.Value && registration is not null)
-                    {
-                        registration.Dispose();
-                        extensionRegistrations.Remove(registration);
-                        registration = null;
-                    }
-                    preferences.Set(preference, args.Value);
-                };
-
-                controls.Children.Add(Row(Caption($"/{name}"), toggle));
-                controls.Children.Add(status);
+                var entry = new ModuleEntry(name, name, $"OscModuleEnabled.{name}",
+                    pinned: preferences.Get($"OscModulePinned.{name}", false), extension: module);
+                if (preferences.Get(entry.EnabledKey, true))
+                    TryEnableExtension(entry);
+                extensions.Add(entry);
             }
             catch (Exception exception)
             {
-                var status = Caption($"{module.GetType().Name}: {exception.Message}");
-                status.TextColor = Warning;
-                controls.Children.Add(status);
+                string name = module.GetType().Name;
+                extensions.Add(new(name, name, "", validationError: exception.Message));
             }
         }
-        return Card(controls);
+        moduleEntries.AddRange(extensions.OrderBy(module => module.Title, StringComparer.CurrentCultureIgnoreCase));
+        foreach (ModuleEntry entry in moduleEntries)
+            if (entry.SupportsFeedback)
+                entry.SetFeedback(preferences.Get(entry.FeedbackKey, false));
+    }
+
+    private bool TryEnableExtension(ModuleEntry entry)
+    {
+        try
+        {
+            entry.Registration = router.Register(entry.Extension!);
+            entry.SetError(null);
+            entry.SetEnabled(true);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            entry.SetError(exception.Message);
+            return false;
+        }
+    }
+
+    private async Task ToggleModuleAsync(ModuleEntry entry)
+    {
+        if (closed || !entry.Available)
+            return;
+
+        bool enabled = !entry.IsEnabled;
+        bool listening = receiver?.Snapshot().Listening == true;
+        if (entry == wheelModule)
+        {
+            if (enabled && listening)
+                AttachWheel();
+            else if (!enabled)
+                DetachWheel();
+            armAfterCalibration = enabled && autoSetup.IsToggled;
+        }
+        else if (entry == pedalsModule)
+        {
+            if (enabled && listening)
+                AttachPedals();
+            else if (!enabled)
+                DetachPedals();
+        }
+        else if (enabled)
+        {
+            if (!TryEnableExtension(entry))
+                return;
+        }
+        else
+        {
+            entry.Registration?.Dispose();
+            entry.Registration = null;
+        }
+
+        entry.SetEnabled(enabled);
+        Preferences.Default.Set(entry.EnabledKey, enabled);
+        Refresh();
+        if (entry == wheelModule && armAfterCalibration)
+            await PrepareVJoyAsync(arm: false);
     }
 
     private void CloseExtensionModules()
     {
-        foreach (IDisposable registration in extensionRegistrations)
-            registration.Dispose();
-        extensionRegistrations.Clear();
+        foreach (ModuleEntry entry in moduleEntries)
+            entry.Registration?.Dispose();
     }
 }

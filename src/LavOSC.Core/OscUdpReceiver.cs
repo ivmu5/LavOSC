@@ -14,6 +14,7 @@ public sealed class OscUdpReceiver : IDisposable
     private readonly OscRouter router;
     private readonly UdpClient listener;
     private readonly CancellationTokenSource stopping = new();
+    private readonly HashSet<string> clientAddresses = new(StringComparer.Ordinal);
     private OscReceiverSnapshot snapshot;
 
     public OscUdpReceiver(int port, OscRouter router)
@@ -41,6 +42,12 @@ public sealed class OscUdpReceiver : IDisposable
     {
         lock (gate)
             return snapshot;
+    }
+
+    public string[] GetClientAddresses()
+    {
+        lock (gate)
+            return [.. clientAddresses];
     }
 
     public void Dispose()
@@ -88,9 +95,12 @@ public sealed class OscUdpReceiver : IDisposable
                         LastSender = sender,
                         LastAddress = messages is { Count: > 0 } ? messages[^1].Address : snapshot.LastAddress
                     };
-                    if (messages is not null)
+                    if (messages is { Count: > 0 })
+                    {
+                        clientAddresses.Add(sender.IpAddress);
                         foreach (var message in messages)
                             router.Dispatch(new(message, sender, received));
+                    }
                 }
             }
         }

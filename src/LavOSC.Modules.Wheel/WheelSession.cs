@@ -11,7 +11,7 @@ public interface ISteeringOutput : IDisposable
 public sealed record WheelSnapshot(string? Sender, long Samples, bool Fresh, bool Calibrated,
     bool OutputActive, double? Angle, double Position, float X, float Y, float Z, string? Notice);
 
-public sealed class WheelSession : IOscModule, IDisposable
+public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 {
     private readonly object gate = new();
     private readonly long started = Stopwatch.GetTimestamp();
@@ -47,6 +47,13 @@ public sealed class WheelSession : IOscModule, IDisposable
                 output is not null, fresh ? steering.RelativeAngle : null,
                 fresh ? steering.Position(settings) : 0, x, y, z, notice);
         }
+    }
+
+    public IReadOnlyList<OscFeedback> GetFeedback()
+    {
+        WheelSnapshot state = Snapshot();
+        return [new("state", [(float)state.Position, (float)(state.Angle ?? 0),
+            state.Fresh, state.Calibrated, state.OutputActive])];
     }
 
     public void Configure(SteeringSettings newSettings)

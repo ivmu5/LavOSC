@@ -4,6 +4,8 @@ LavOSC routes Open Sound Control messages from a single UDP port to independent 
 
 `Laveyana.LavOSC.Core` provides `OscUdpReceiver`, `OscRouter` and the `IOscModule` contract. A module can receive private commands such as `/panel/preset` and subscribe to shared messages such as `/accxyz` through `OscModuleRegistration`.
 
+Modules can implement `IOscFeedbackSource` to provide state snapshots. A host can encode an `OscFeedback` value for `/<module>/feedback/<name>` and choose the UDP recipients.
+
 `Laveyana.LavOSC.Modules.Wheel` depends on Core. Its `WheelSession` uses `/accxyz` for steering and exposes `/wheel/calibrate`. Implement `ISteeringOutput` to connect it to your own output device. The LavOSC Windows application provides the vJoy adapter.
 
 `Laveyana.LavOSC.Modules.Pedals` depends on Core. Its `PedalSession` handles `/pedals/state`, `/pedals/throttle` and `/pedals/brake`, smooths both inputs and resets stale channels. Implement `IPedalOutput` for your own output device.
