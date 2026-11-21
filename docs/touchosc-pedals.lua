@@ -3,6 +3,8 @@ local brake
 local throttleFeedback
 local brakeFeedback
 local nextSend = 0
+local throttleAddress = '/pedals/throttle'
+local brakeAddress = '/pedals/brake'
 
 function init()
   throttle = self:findByName('Throttle', true)
@@ -11,37 +13,40 @@ function init()
   brakeFeedback = self:findByName('BrakeFeedback', true)
 end
 
-local function pedalValue(fader)
-  if fader.values.touch then
-    return fader.values.x
+local function sendPedal(fader, feedback, address)
+  if not fader then
+    return
   end
 
-  fader.values.x = 0
-  return 0
+  local value = fader.values.touch and fader.values.x or 0
+  fader.values.x = value
+  if feedback then
+    feedback.values.x = value
+  end
+  sendOSC(address, value, { true })
 end
 
 function update()
   local now = getMillis()
-  if not throttle or not brake or now < nextSend then
+  if now < nextSend then
     return
   end
 
   nextSend = now + 40
-  sendOSC('/pedals/state', pedalValue(throttle), pedalValue(brake), { true })
+  sendPedal(throttle, throttleFeedback, throttleAddress)
+  sendPedal(brake, brakeFeedback, brakeAddress)
 end
 
 function onReceiveOSC(message)
-  if message[1] ~= '/pedals/feedback/state' then
-    return
+  local indicator
+  if message[1] == throttleAddress then
+    indicator = throttleFeedback
+  elseif message[1] == brakeAddress then
+    indicator = brakeFeedback
   end
 
-  local arguments = message[2]
-  local gas = arguments[1] and arguments[1].value
-  local braking = arguments[2] and arguments[2].value
-  if throttleFeedback and type(gas) == 'number' then
-    throttleFeedback.values.x = gas
-  end
-  if brakeFeedback and type(braking) == 'number' then
-    brakeFeedback.values.x = braking
+  local argument = indicator and message[2][1]
+  if argument and type(argument.value) == 'number' then
+    indicator.values.x = argument.value
   end
 end

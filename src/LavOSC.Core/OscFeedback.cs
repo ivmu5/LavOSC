@@ -3,10 +3,19 @@ using System.Text;
 
 namespace Laveyana.LavOSC.Core;
 
+/// <summary>The last input that affected this feedback address, with the values reflected by its sender.</summary>
+public sealed record OscFeedbackOrigin(string IpAddress, long Timestamp, IReadOnlyList<object?> Arguments, bool SuppressEcho = true);
+
 public sealed record OscFeedback(string Name, IReadOnlyList<object?> Arguments)
 {
     /// <summary>Sends on /module/name instead of /module/feedback/name.</summary>
     public bool UseCommandAddress { get; init; }
+
+    /// <summary>Baseline assumed for a new recipient. Null sends the current value on first observation.</summary>
+    public IReadOnlyList<object?>? InitialArguments { get; init; }
+
+    /// <summary>Set after accepting a client update. Keep the input when a later local change permits feedback to that client.</summary>
+    public OscFeedbackOrigin? Origin { get; init; }
 
     public string GetAddress(string module)
     {
@@ -75,6 +84,6 @@ public sealed record OscFeedback(string Name, IReadOnlyList<object?> Arguments)
 
 public interface IOscFeedbackSource
 {
-    // Called on a background thread. Return a snapshot that remains stable while it is encoded.
+    // Called on a background thread. Use one address per independent value and return stable arguments.
     IReadOnlyList<OscFeedback> GetFeedback();
 }
