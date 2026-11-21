@@ -73,7 +73,7 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
         lock (DriverLock)
         {
             VJoyApi api = GetEnabledApi(path) ??
-                throw new InvalidOperationException("Драйвер vJoy недоступен. Нажми «Подготовить vJoy», чтобы проверить его состояние.");
+                throw new InvalidOperationException("Драйвер vJoy недоступен.");
 
             if (axes is VJoyAxes.None || (axes & ~VJoyAxes.All) != 0)
                 throw new ArgumentOutOfRangeException(nameof(axes));
@@ -81,7 +81,7 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
             var state = api.Status(id);
             bool leased = LeasedAxes.TryGetValue(id, out var used);
             if (state == VJoyDeviceState.Missing)
-                throw new InvalidOperationException($"Устройство vJoy №{id} отсутствует. Проверь его в Configure vJoy.");
+                throw new InvalidOperationException($"Устройство vJoy №{id} отсутствует.");
             if ((leased ? state != VJoyDeviceState.Owned : state != VJoyDeviceState.Free) || (used & axes) != 0)
                 throw new InvalidOperationException($"Устройство vJoy №{id} или оси {FormatAxes(axes)} заняты.");
 
@@ -96,7 +96,7 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
                     if ((axes & axis) == 0)
                         continue;
                     if (api.HasAxis(id, usage) == 0)
-                        throw new InvalidOperationException($"Включи ось {axis} устройства vJoy №{id} в Configure vJoy.");
+                        throw new InvalidOperationException($"Ось {axis} устройства vJoy №{id} недоступна. Проверьте настройки в Configure vJoy.");
                     if (api.AxisMin(id, usage, out int minimum) == 0 ||
                         api.AxisMax(id, usage, out int maximum) == 0 || maximum <= minimum)
                         throw new InvalidOperationException($"Не удалось прочитать диапазон оси {axis} в vJoy.");
@@ -166,7 +166,7 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
         if (processApi is { } loaded)
         {
             if (!string.Equals(loaded.Path, path, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Для смены DLL vJoy полностью закрой приложение и открой его снова.");
+                throw new InvalidOperationException("Для смены DLL vJoy требуется перезапуск приложения.");
 
             return loaded.Enabled() != 0 ? loaded : null;
         }
@@ -213,7 +213,7 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
         }
         catch (BadImageFormatException exception)
         {
-            throw new InvalidOperationException("Нужна 64-битная vJoyInterface.dll из папки x64.", exception);
+            throw new InvalidOperationException("Требуется 64-битная vJoyInterface.dll.", exception);
         }
         catch (DllNotFoundException exception)
         {
@@ -224,7 +224,7 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
     private static T Load<T>(nint library, string name) where T : Delegate
     {
         if (!NativeLibrary.TryGetExport(library, name, out nint entry))
-            throw new InvalidOperationException($"В vJoyInterface.dll отсутствует функция {name}. Укажи DLL установленного драйвера.");
+            throw new InvalidOperationException($"В vJoyInterface.dll отсутствует функция {name}. Требуется DLL установленного драйвера.");
         return Marshal.GetDelegateForFunctionPointer<T>(entry);
     }
 

@@ -66,7 +66,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 
             long now = Stopwatch.GetTimestamp();
             if (!throttle.IsFresh(now) && !brake.IsFresh(now))
-                throw new InvalidOperationException("Дождись сигнала педалей с телефона.");
+                throw new InvalidOperationException("Для передачи в vJoy требуется сигнал педалей.");
 
             var candidate = acquire();
             try
@@ -125,7 +125,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
                 return;
 
             if (output is not null && !throttle.IsFresh(now) && !brake.IsFresh(now))
-                StopOutput("Сигнал пропал. После восстановления включи педали снова.");
+                StopOutput("Сигнал потерян. После восстановления требуется повторное включение педалей.");
 
             sender ??= envelope.Sender.IpAddress;
             first.SetTarget(nextFirst, envelope.ReceivedTimestamp);
@@ -165,9 +165,9 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             try
             {
                 if (!throttleFresh && !brakeFresh)
-                    StopOutput("Сигнал пропал. После восстановления включи педали снова.");
+                    StopOutput("Сигнал потерян. После восстановления требуется повторное включение педалей.");
                 else if (changed && !output.TryWrite(throttle.Position, brake.Position))
-                    StopOutput("vJoy отклонил команду. Проверь устройство и включи педали снова.");
+                    StopOutput("vJoy отклонил команду. Требуется повторное включение педалей.");
             }
             catch (Exception exception)
             {

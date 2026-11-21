@@ -34,7 +34,7 @@ internal sealed partial class OscReceiverPage
             ItemsSource = feedbackClients,
             SelectionMode = SelectionMode.Single,
             ItemSizingStrategy = ItemSizingStrategy.MeasureFirstItem,
-            EmptyView = Caption("Ожидаю первое OSC-сообщение от клиента."),
+            EmptyView = Caption("Клиенты OSC не обнаружены."),
             ItemTemplate = new DataTemplate(() =>
             {
                 var address = Heading("", 16);
@@ -85,7 +85,7 @@ internal sealed partial class OscReceiverPage
         {
             if (!TryNumber(incomingPort.Text, 1, 65535, out int port))
             {
-                status.Text = "Укажи входящий UDP-порт клиента от 1 до 65535.";
+                status.Text = "Входящий UDP-порт должен быть в диапазоне 1–65535.";
                 status.TextColor = Warning;
                 status.IsVisible = true;
                 return;
@@ -160,8 +160,8 @@ internal sealed partial class OscReceiverPage
     private void UpdateFeedbackStatus(string? failure = null)
     {
         feedbackStatus.TextColor = failure is null ? Muted : Warning;
-        feedbackStatus.Text = failure ?? (feedbackRecipients.Length == 0 ? "Выбери получателей обратной связи."
-            : $"Получателей: {feedbackRecipients.Length} · состояние отправляют модули с включённой обратной связью");
+        feedbackStatus.Text = failure ?? (feedbackRecipients.Length == 0 ? "Нет получателей обратной связи."
+            : $"Получателей обратной связи · {feedbackRecipients.Length}");
     }
 
     private void StartFeedbackTimer()

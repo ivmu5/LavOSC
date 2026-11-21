@@ -62,7 +62,7 @@ internal static class VJoyWindowsDevices
             return new string(buffer).Split('\0', StringSplitOptions.RemoveEmptyEntries);
         }
 
-        throw new InvalidOperationException("Список устройств Windows изменился во время проверки. Повтори поиск vJoy.");
+        throw new InvalidOperationException("Список устройств Windows изменился во время проверки. Повторите поиск vJoy.");
     }
 
     private static void Verify(uint code)

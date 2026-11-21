@@ -75,7 +75,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
     {
         if (!steering.Calibrate(now))
         {
-            notice = "Держи телефон неподвижно в нейтрали и повтори.";
+            notice = "Калибровка не выполнена. Требуется стабильный сигнал акселерометра.";
             return false;
         }
 
@@ -92,7 +92,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             if (output is not null)
                 return;
             if (!steering.IsCalibrated || !steering.IsFresh(Stopwatch.GetElapsedTime(started)))
-                throw new InvalidOperationException("Дождись сигнала с телефона и выставь центр.");
+                throw new InvalidOperationException("Для передачи в vJoy требуются сигнал акселерометра и калибровка.");
 
             output = acquire();
             notice = null;
@@ -185,7 +185,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             return;
 
         ReleaseOutput();
-        notice = "Сигнал пропал. После восстановления включи руль снова.";
+        notice = "Сигнал потерян. После восстановления требуется повторное включение руля.";
     }
 
     private void WritePosition(double position)
@@ -194,7 +194,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             return;
 
         ReleaseOutput();
-        notice = "vJoy отклонил команду. Проверь устройство и включи руль снова.";
+        notice = "vJoy отклонил команду. Требуется повторное включение руля.";
     }
 
     private void ReleaseOutput()

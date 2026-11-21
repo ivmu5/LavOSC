@@ -30,7 +30,7 @@ internal static class VJoySetup
                 throw new InvalidOperationException(DescribeUnavailableDriver(devices));
 
             if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
-                throw new InvalidOperationException("vJoy отключён (код 22). Включи vJoy Device в диспетчере устройств.");
+                throw new InvalidOperationException("vJoy отключён (код 22). Включите vJoy Device в диспетчере устройств.");
 
             progress.Report(new("vJoy отключён в Windows (код 22). Включение через PnPUtil…", scan));
             string pnpUtil = Path.Combine(Environment.SystemDirectory, "pnputil.exe");
@@ -49,8 +49,8 @@ internal static class VJoySetup
             return new(scan, available.Id, false);
 
         if (!options.AllowDeviceCreation)
-            throw new InvalidOperationException($"Оси {requiredAxes} недоступны. Отключи активную передачу в vJoy " +
-                "перед созданием устройства или выбери устройство с нужными осями.");
+            throw new InvalidOperationException($"Оси {requiredAxes} недоступны. Отключите передачу в vJoy " +
+                "перед созданием устройства или выберите устройство с нужными осями.");
 
         var empty = scan.Devices.FirstOrDefault(device => device.State == VJoyDeviceState.Missing &&
             (options.RequestedId == 0 || device.Id == options.RequestedId));
@@ -58,7 +58,7 @@ internal static class VJoySetup
         {
             if (options.RequestedId != 0)
                 throw new InvalidOperationException($"Устройство №{options.RequestedId} занято или у него нет осей {requiredAxes}. " +
-                    "Проверь его в Configure vJoy, выбери другой номер или «Автоматически».");
+                    "Проверьте конфигурацию в Configure vJoy или измените выбор устройства.");
 
             throw new InvalidOperationException($"Нет свободных осей {requiredAxes} и свободного номера для создания устройства.");
         }
@@ -71,7 +71,7 @@ internal static class VJoySetup
         scan = await WaitForAsync(() => VJoyOutput.Scan(path), state => state.DriverEnabled && state.Devices.Any(device =>
                 device.Id == empty.Id && (device.Axes & VJoyAxes.All) == VJoyAxes.All), cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Устройство №{empty.Id} с осями X, Y, Z не появилось. " +
-                "Проверь этот номер в Configure vJoy.");
+                "Проверьте конфигурацию в Configure vJoy.");
         progress.Report(new($"Проверка устройства №{empty.Id}…", scan));
         if (SelectAvailable(scan.Devices, options with { RequestedId = empty.Id }) is null)
             throw new InvalidOperationException($"Устройство №{empty.Id} занято или оси {requiredAxes} недоступны.");
@@ -89,23 +89,23 @@ internal static class VJoySetup
     internal static string DescribeUnavailableDriver(VJoyWindowsDevice[] devices)
     {
         if (devices.Length == 0)
-            return "Windows не обнаружила устройство драйвера vJoy. Проверь установку vJoy в диспетчере устройств.";
+            return "Устройство vJoy не обнаружено. Проверьте установку драйвера.";
 
         var codes = devices.Where(device => device.ProblemCode.HasValue)
             .Select(device => device.ProblemCode.GetValueOrDefault()).Distinct().Order().ToArray();
         if (codes is [22])
-            return "vJoy отключён в Windows (код 22). Включи vJoy Device в диспетчере устройств и повтори подготовку.";
+            return "vJoy отключён в Windows (код 22). Включите vJoy Device в диспетчере устройств.";
         if (codes is [52])
             return "Windows не может проверить цифровую подпись драйвера vJoy (код 52). " +
-                "Установи подписанную версию vJoy.";
+                "Требуется подписанный драйвер vJoy.";
         if (codes.Length > 0)
             return $"Windows сообщает об ошибке устройства vJoy (код: {string.Join(", ", codes)}). " +
-                "Открой vJoy Device в диспетчере устройств и проверь «Состояние устройства».";
+                "Подробности доступны в диспетчере устройств.";
         if (devices.Any(device => device.Started))
             return "Windows запустила устройство vJoy, но интерфейс драйвера не доступен этой DLL. " +
-                "Очисти ручной путь к DLL и повтори подготовку. При необходимости проверь версию установки vJoy.";
+                "Очистите путь к DLL для автоматического поиска.";
 
-        return "Устройство vJoy найдено, но Windows ещё не запустила его. Проверь состояние vJoy Device в диспетчере устройств.";
+        return "Устройство vJoy не запущено. Проверьте его состояние в диспетчере устройств.";
     }
 
     private static async Task<VJoyScan?> WaitForAsync(Func<VJoyScan> read, Func<VJoyScan, bool> ready,
@@ -133,7 +133,7 @@ internal static class VJoySetup
             : null;
         if (tool is null)
             throw new InvalidOperationException("Не найден vJoyConfig.exe рядом с DLL установленного vJoy. " +
-                "Установи компонент Configure vJoy или настрой нужные оси вручную.");
+                "Требуется компонент Configure vJoy.");
 
         return RunElevatedAsync(tool, cancellationToken, arguments);
     }
@@ -164,15 +164,15 @@ internal static class VJoySetup
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new InvalidOperationException($"{name} ещё работает. Дождись его завершения и нажми «Подготовить vJoy».");
+                throw new InvalidOperationException($"{name} не завершился вовремя. Повторите подготовку после его завершения.");
             }
 
             if (process.ExitCode != 0)
-                throw new InvalidOperationException($"{name} завершился с кодом {process.ExitCode}. Проверь vJoy в диспетчере устройств.");
+                throw new InvalidOperationException($"{name} завершился с кодом {process.ExitCode}.");
         }
         catch (Win32Exception exception) when (exception.NativeErrorCode == 1223)
         {
-            throw new InvalidOperationException("Настройка vJoy отменена в запросе Windows. Нажми «Подготовить vJoy», чтобы повторить.");
+            throw new InvalidOperationException("Настройка vJoy отменена.");
         }
         catch (Win32Exception exception)
         {
@@ -189,7 +189,7 @@ internal static class VJoySetup
                                                 && File.Exists(path))
                 return VJoyOutput.Scan(Path.GetFullPath(path));
 
-            throw new InvalidOperationException($"Укажи полный путь к 64-битной {DllName} или оставь поле пустым для автопоиска.");
+            throw new InvalidOperationException($"Требуется полный путь к 64-битной {DllName}. Пустое поле включает автоматический поиск.");
         }
 
         VJoyScan? firstScan = null;
@@ -210,7 +210,7 @@ internal static class VJoySetup
         }
 
         return firstScan ?? throw (firstError ??
-            new InvalidOperationException("vJoy не найден. Установи драйвер с компонентом Configure vJoy и нажми «Подготовить vJoy»."));
+            new InvalidOperationException("vJoy не найден. Требуется драйвер с компонентом Configure vJoy."));
     }
 
     private static string[] FindInstalledLibraries()

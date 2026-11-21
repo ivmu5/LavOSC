@@ -31,17 +31,24 @@ namespace Laveyana.LavOSC;
 internal sealed class WindowsWindowChrome
 {
     private const int CaptionHeight = 44;
-    private const int ToolbarWidth = 170;
+    private const int ButtonWidth = 36;
+    private const int ToolbarPadding = 3;
+    private const int ToolbarSpacing = 3;
+    private const int ToolbarMargin = 8;
     private const double AnimationMilliseconds = 180;
     private readonly NativeWindow window;
     private readonly Panel root;
     private readonly AppWindow appWindow;
+    private readonly AppWindowTitleBar titleBar;
     private readonly OverlappedPresenter presenter;
     private readonly OscReceiverPage page;
     private readonly Grid caption;
     private readonly Grid dragRegion;
+    private readonly Border toolbar;
+    private readonly Button minimize;
     private readonly Button maximize;
     private readonly Button fullscreen;
+    private readonly Button close;
     private readonly TranslateTransform translation = new();
     private readonly UISettings system = new();
     private readonly KeyboardAccelerator fullscreenKey;
@@ -51,6 +58,7 @@ internal sealed class WindowsWindowChrome
     private bool captionVisible = true;
     private long animationStarted;
     private double animationFrom;
+    private XamlRoot? xamlRoot;
     private bool IsFullscreen => appWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen;
 
     public static void Prepare(NativeWindow window)
@@ -59,7 +67,12 @@ internal sealed class WindowsWindowChrome
             return;
 
         window.ExtendsContentIntoTitleBar = true;
-        window.AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Collapsed;
+        var titleBar = window.AppWindow.TitleBar;
+        titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+        titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        titleBar.ButtonForegroundColor = ToNativeColor(PulseVisuals.Text);
+        titleBar.ButtonInactiveForegroundColor = ToNativeColor(PulseVisuals.Muted);
     }
 
     public static void Attach(MauiWindow window, OscReceiverPage page)
@@ -69,7 +82,7 @@ internal sealed class WindowsWindowChrome
 
         if (native.Content is not Panel root || native.AppWindow.Presenter is not OverlappedPresenter presenter)
         {
-            native.AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
+            native.AppWindow.TitleBar.ResetToDefault();
             native.ExtendsContentIntoTitleBar = false;
             return;
         }
@@ -84,34 +97,39 @@ internal sealed class WindowsWindowChrome
         this.presenter = presenter;
         this.page = page;
         appWindow = window.AppWindow;
+        titleBar = appWindow.TitleBar;
         root.RequestedTheme = ElementTheme.Dark;
         root.Background ??= Brush(PulseVisuals.Background);
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
-        buttons.Children.Add(CreateButton("\uE921", "Свернуть", () =>
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = ToolbarSpacing };
+        minimize = CreateButton("\uE921", "Свернуть", () =>
         {
             if (IsFullscreen)
                 ExitFullscreen();
             presenter.Minimize();
-        }));
-        maximize = CreateButton("\uE922", "Развернуть", ToggleMaximize);
-        fullscreen = CreateButton("\uE92D", "На весь экран (F11)", ToggleFullscreen);
+        });
+        maximize = CreateButton("\uE922", "Развернуть", () =>
+        {
+            ExitFullscreen();
+            presenter.Maximize();
+        });
+        fullscreen = CreateButton("\uE92D", "Полноэкранный режим (F11)", ToggleFullscreen);
+        buttons.Children.Add(minimize);
         buttons.Children.Add(maximize);
         buttons.Children.Add(fullscreen);
-        var close = CreateButton("\uE8BB", "Закрыть", window.Close);
+        close = CreateButton("\uE8BB", "Закрыть", window.Close);
         close.Resources["ButtonBackgroundPointerOver"] = Brush(PulseVisuals.Danger);
         buttons.Children.Add(close);
-        var toolbar = new Border
+        toolbar = new Border
         {
             Child = buttons, Background = Brush(PulseVisuals.Card, 230), CornerRadius = new CornerRadius(8),
             HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(3)
+            Visibility = Visibility.Collapsed, Padding = new Thickness(ToolbarPadding)
         };
 
         dragRegion = new Grid
         {
-            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-            Margin = new Thickness(0, 0, ToolbarWidth, 0)
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent)
         };
         dragRegion.Children.Add(CreateBrand());
         caption = new Grid
@@ -144,7 +162,6 @@ internal sealed class WindowsWindowChrome
         window.Activated += OnActivated;
         window.Closed += OnClosed;
         appWindow.Changed += OnWindowChanged;
-        page.SetCaptionInset(CaptionHeight);
         Prepare(window);
         UpdateButtons();
     }
@@ -172,26 +189,18 @@ internal sealed class WindowsWindowChrome
 
     private void OnDragRegionLoaded(object sender, RoutedEventArgs args)
     {
+        if (xamlRoot != dragRegion.XamlRoot)
+        {
+            if (xamlRoot is not null)
+                xamlRoot.Changed -= OnXamlRootChanged;
+            xamlRoot = dragRegion.XamlRoot;
+            if (xamlRoot is not null)
+                xamlRoot.Changed += OnXamlRootChanged;
+        }
+
         if (!IsFullscreen)
             window.SetTitleBar(dragRegion);
-    }
-
-    private void ToggleMaximize()
-    {
-        if (IsFullscreen)
-        {
-            ExitFullscreen();
-            presenter.Maximize();
-        }
-        else if (presenter.State == OverlappedPresenterState.Maximized)
-        {
-            presenter.Restore();
-        }
-        else
-        {
-            presenter.Maximize();
-        }
-        UpdateButtons();
+        UpdateCaptionLayout();
     }
 
     private void ToggleFullscreen()
@@ -208,7 +217,6 @@ internal sealed class WindowsWindowChrome
         restoreBounds = new RectInt32(position.X, position.Y, size.Width, size.Height);
         window.SetTitleBar(null);
         appWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
-        page.SetCaptionInset(0);
         SetCaptionVisible(false, animate: true);
         UpdateButtons();
     }
@@ -226,7 +234,6 @@ internal sealed class WindowsWindowChrome
         Prepare(window);
         if (dragRegion.IsLoaded)
             window.SetTitleBar(dragRegion);
-        page.SetCaptionInset(CaptionHeight);
         SetCaptionVisible(true, animate: false);
         UpdateButtons();
     }
@@ -249,6 +256,8 @@ internal sealed class WindowsWindowChrome
     {
         if (IsFullscreen && args.WindowActivationState == WindowActivationState.Deactivated)
             SetCaptionVisible(false, animate: false);
+        else if (!IsFullscreen)
+            UpdateCaptionLayout();
     }
 
     private void SetCaptionVisible(bool visible, bool animate)
@@ -297,10 +306,30 @@ internal sealed class WindowsWindowChrome
 
     private void UpdateButtons()
     {
-        bool maximized = !IsFullscreen && presenter.State == OverlappedPresenterState.Maximized;
-        UpdateButton(maximize, maximized ? "\uE923" : "\uE922", maximized ? "Восстановить размер окна" : "Развернуть");
         UpdateButton(fullscreen, IsFullscreen ? "\uE92C" : "\uE92D",
-            IsFullscreen ? "Выйти из полноэкранного режима (F11 / Esc)" : "На весь экран (F11)");
+            IsFullscreen ? "Выйти из полноэкранного режима (F11 / Esc)" : "Полноэкранный режим (F11)");
+        UpdateCaptionLayout();
+    }
+
+    private void OnXamlRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => UpdateCaptionLayout();
+
+    private void UpdateCaptionLayout()
+    {
+        bool isFullscreen = IsFullscreen;
+        double scale = xamlRoot?.RasterizationScale ?? 1;
+        double left = isFullscreen ? 0 : titleBar.LeftInset / scale;
+        double right = isFullscreen ? 0 : titleBar.RightInset / scale;
+        bool showToolbar = isFullscreen || xamlRoot is not null && (left > 0 || right > 0);
+        var overlayVisibility = isFullscreen ? Visibility.Visible : Visibility.Collapsed;
+        minimize.Visibility = maximize.Visibility = close.Visibility = overlayVisibility;
+        toolbar.Visibility = showToolbar ? Visibility.Visible : Visibility.Collapsed;
+        toolbar.Margin = new Thickness(0, 0, right + ToolbarMargin, 0);
+
+        // Keep the only in-window button clear of the system caption hit targets.
+        double toolbarSpace = showToolbar ? ButtonWidth + 2 * ToolbarPadding + 2 * ToolbarMargin : 0;
+        dragRegion.Margin = new Thickness(left, 0, right + toolbarSpace, 0);
+        caption.Height = isFullscreen ? CaptionHeight : Math.Max(CaptionHeight, titleBar.Height / scale);
+        page.SetCaptionInset(isFullscreen ? 0 : caption.Height);
     }
 
     private void OnClosed(object sender, WindowEventArgs args)
@@ -313,6 +342,8 @@ internal sealed class WindowsWindowChrome
         window.Activated -= OnActivated;
         window.Closed -= OnClosed;
         appWindow.Changed -= OnWindowChanged;
+        if (xamlRoot is not null)
+            xamlRoot.Changed -= OnXamlRootChanged;
         dragRegion.Loaded -= OnDragRegionLoaded;
     }
 
@@ -320,7 +351,7 @@ internal sealed class WindowsWindowChrome
     {
         var button = new Button
         {
-            Width = 36, Height = 32, Padding = new Thickness(0), BorderThickness = new Thickness(0),
+            Width = ButtonWidth, Height = 32, Padding = new Thickness(0), BorderThickness = new Thickness(0),
             HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center,
             Foreground = Brush(PulseVisuals.Text), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             Content = new FontIcon { FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 13 }
@@ -337,9 +368,12 @@ internal sealed class WindowsWindowChrome
         ToolTipService.SetToolTip(button, description);
     }
 
-    private static SolidColorBrush Brush(Microsoft.Maui.Graphics.Color color, byte alpha = 255)
+    private static SolidColorBrush Brush(Microsoft.Maui.Graphics.Color color, byte alpha = 255) =>
+        new(ToNativeColor(color, alpha));
+
+    private static NativeColor ToNativeColor(Microsoft.Maui.Graphics.Color color, byte alpha = 255)
     {
         color.ToRgb(out byte red, out byte green, out byte blue);
-        return new SolidColorBrush(NativeColor.FromArgb(alpha, red, green, blue));
+        return NativeColor.FromArgb(alpha, red, green, blue);
     }
 }

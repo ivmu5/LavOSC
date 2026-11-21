@@ -190,7 +190,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         }
         else if (!TryNumber(port.Text, 1, 65535, out int value))
         {
-            error = "Введи UDP-порт от 1 до 65535.";
+            error = "UDP-порт должен быть в диапазоне 1–65535.";
         }
         else
         {
@@ -277,8 +277,8 @@ internal sealed partial class OscReceiverPage : ContentPage
                 $"UDP {input.Port} · {sender.IpAddress}:{sender.Port}\n" +
                 $"Сообщений: {input.Messages:N0} · Пакетов: {input.Packets:N0}\n" +
                 $"Последний адрес: {input.LastAddress ?? "—"} · Ошибки пакетов: {input.MalformedPackets:N0}",
-            { Listening: true } => $"Ожидаю OSC на UDP {input.Port}",
-            _ => "Приём OSC выключен"
+            { Listening: true } => $"UDP {input.Port} · пакеты OSC не получены",
+            _ => "Приём OSC отключён"
         });
         networkStatus.TextColor = error is not null || input?.Error is not null ? Warning
             : input?.LastSender is not null ? Accent : Muted;
@@ -288,9 +288,10 @@ internal sealed partial class OscReceiverPage : ContentPage
         routingStatus.TextColor = Warning;
         routingStatus.Text = $"Пропущено доставок: {routing.DroppedDeliveries:N0} · Ошибок модулей: {routing.HandlerErrors:N0}" +
             (routing.LastHandlerError is { } handlerError ? $"\n{handlerError}" : "");
+        sampleStatus.IsVisible = wheelModule.IsEnabled;
         sampleStatus.Text = receiving
             ? $"/accxyz · {snapshot!.Sender} · ≈ {frequency:F0} Гц"
-            : "Ожидаю /accxyz";
+            : "Нет сигнала /accxyz";
         vJoyStatus.Text = vJoyError ?? vJoyMessage ?? "Ожидание настройки";
         vJoyStatus.TextColor = vJoyError is not null ? Warning : active || pedalsActive ? Accent : Muted;
         vJoyLibrary.Text = vJoyScan?.DllPath ?? "";
@@ -301,9 +302,9 @@ internal sealed partial class OscReceiverPage : ContentPage
         axisValue.Text = calibrated && receiving ? $"{snapshot!.Position * 100:+0;-0;0}%" : "—%";
         sensorValues.Text = receiving ? $"X {snapshot!.X:F2}     Y {snapshot.Y:F2}     Z {snapshot.Z:F2}" : "X —     Y —     Z —";
         string? issue = snapshot?.Notice;
-        notice.Text = issue ?? (!wheelModule.IsEnabled ? "Модуль выключен" :
-            calibrated ? "Центр выставлен" : "Держи телефон как руль и выставь центр.");
-        notice.TextColor = issue is null ? Muted : Warning;
+        notice.IsVisible = issue is not null || receiving && !calibrated;
+        notice.Text = issue ?? "Требуется калибровка.";
+        notice.TextColor = Warning;
 
         double position = snapshot?.Position ?? 0;
         if (gauge.Position != position || gauge.Active != active)
