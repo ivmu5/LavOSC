@@ -1,12 +1,14 @@
 namespace Laveyana.LavOSC.Modules.Wheel;
 
 public sealed record SteeringSettings(double LockDegrees = 60, double DeadZoneDegrees = 2,
-    double SmoothingMs = 55, bool Invert = false)
+    double SmoothingMs = SteeringSettings.DefaultSmoothingMs, bool Invert = false)
 {
+    public const double DefaultSmoothingMs = 20;
+
     public SteeringSettings Normalize() => new(
         double.IsFinite(LockDegrees) ? Math.Clamp(LockDegrees, 25, 110) : 60,
         double.IsFinite(DeadZoneDegrees) ? Math.Clamp(DeadZoneDegrees, 0, 10) : 2,
-        double.IsFinite(SmoothingMs) ? Math.Clamp(SmoothingMs, 0, 150) : 55,
+        double.IsFinite(SmoothingMs) ? Math.Clamp(SmoothingMs, 0, 150) : DefaultSmoothingMs,
         Invert);
 }
 

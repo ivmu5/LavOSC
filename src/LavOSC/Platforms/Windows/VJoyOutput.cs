@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Laveyana.LavOSC.Modules.Pedals;
 using Laveyana.LavOSC.Modules.Wheel;
@@ -19,6 +20,7 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
         [(VJoyAxes.X, 0x30), (VJoyAxes.Y, 0x31), (VJoyAxes.Z, 0x32)];
     private static readonly Dictionary<uint, VJoyAxes> LeasedAxes = new();
     private static VJoyApi? processApi;
+    private static long peakWriteTicks;
     private readonly VJoyApi api;
     private readonly uint id;
     private readonly VJoyAxes axes;
@@ -35,6 +37,8 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
 
     public static string FormatAxes(VJoyAxes axes) => string.Join(", ", AxisUsages
         .Where(entry => (axes & entry.Axis) != 0).Select(entry => entry.Axis.ToString()));
+
+    public static TimeSpan PeakWriteTime => TimeSpan.FromTicks(Interlocked.Read(ref peakWriteTicks));
 
     public static VJoyScan Scan(string path)
     {
@@ -118,16 +122,22 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
 
     bool ISteeringOutput.TryWrite(double position)
     {
+        long started = Stopwatch.GetTimestamp();
+        bool written;
         lock (DriverLock)
-        {
-            return TryWriteAxis(VJoyAxes.X, (position + 1) / 2);
-        }
+            written = TryWriteAxis(VJoyAxes.X, (position + 1) / 2);
+        TrackWrite(started);
+        return written;
     }
 
     bool IPedalOutput.TryWrite(double throttle, double brake)
     {
+        long started = Stopwatch.GetTimestamp();
+        bool written;
         lock (DriverLock)
-            return TryWriteAxis(VJoyAxes.Y, throttle) & TryWriteAxis(VJoyAxes.Z, brake);
+            written = TryWriteAxis(VJoyAxes.Y, throttle) & TryWriteAxis(VJoyAxes.Z, brake);
+        TrackWrite(started);
+        return written;
     }
 
     private bool TryWriteAxis(VJoyAxes axis, double fraction)
@@ -136,7 +146,22 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
             return false;
 
         int value = (int)Math.Round(range.Minimum + Math.Clamp(fraction, 0, 1) * ((double)range.Maximum - range.Minimum));
-        return api.WriteAxis(value, id, range.Usage) != 0;
+        if (range.LastWritten == value)
+            return true;
+        if (api.WriteAxis(value, id, range.Usage) == 0)
+            return false;
+        range.LastWritten = value;
+        return true;
+    }
+
+    private static void TrackWrite(long started)
+    {
+        long ticks = Stopwatch.GetElapsedTime(started).Ticks;
+        long peak;
+        do
+        {
+            peak = Interlocked.Read(ref peakWriteTicks);
+        } while (ticks > peak && Interlocked.CompareExchange(ref peakWriteTicks, ticks, peak) != peak);
     }
 
     public void Dispose()
@@ -200,7 +225,10 @@ internal sealed class VJoyOutput : ISteeringOutput, IPedalOutput
         }
     }
 
-    private readonly record struct AxisRange(uint Usage, int Minimum, int Maximum);
+    private sealed record AxisRange(uint Usage, int Minimum, int Maximum)
+    {
+        public int? LastWritten { get; set; }
+    }
 
     private sealed record VJoyApi(string Path, DriverEnabled Enabled, GetStatus Status, AxisExists HasAxis,
         AcquireDevice Acquire, ReleaseDevice Release, GetAxisLimit AxisMin, GetAxisLimit AxisMax, SetAxis WriteAxis);

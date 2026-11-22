@@ -86,7 +86,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         InitializeModules(modules, preferences);
 
         var settings = new SteeringSettings(preferences.Get("LockDegrees", 60d),
-            preferences.Get("DeadZoneDegrees", 2d), preferences.Get("SmoothingMs", 55d),
+            preferences.Get("DeadZoneDegrees", 2d), preferences.Get("SmoothingMs", SteeringSettings.DefaultSmoothingMs),
             preferences.Get("Invert", false)).Normalize();
         lockDegrees.Value = settings.LockDegrees;
         deadZone.Value = settings.DeadZoneDegrees;
@@ -285,14 +285,17 @@ internal sealed partial class OscReceiverPage : ContentPage
             : input?.LastSender is not null ? Accent : Muted;
         settingsNetworkStatus.Text = networkStatus.Text;
         settingsNetworkStatus.TextColor = networkStatus.TextColor;
-        routingStatus.IsVisible = routing.DroppedDeliveries > 0 || routing.HandlerErrors > 0;
-        routingStatus.TextColor = Warning;
-        routingStatus.Text = $"Пропущено доставок: {routing.DroppedDeliveries:N0} · Ошибок модулей: {routing.HandlerErrors:N0}" +
+        routingStatus.IsVisible = input?.Listening == true;
+        routingStatus.TextColor = routing.DroppedDeliveries > 0 || routing.HandlerErrors > 0 ? Warning : Muted;
+        routingStatus.Text = $"Макс. приём → обработчик: {routing.PeakQueueDelay.TotalMilliseconds:F1} мс · vJoy: {VJoyOutput.PeakWriteTime.TotalMilliseconds:F1} мс\n" +
+            $"Заменено старых значений: {routing.SupersededDeliveries:N0} · Пропущено: {routing.DroppedDeliveries:N0} · Ошибок: {routing.HandlerErrors:N0}" +
             (routing.LastHandlerError is { } handlerError ? $"\n{handlerError}" : "");
         sampleStatus.IsVisible = wheelModule.IsEnabled;
         sampleStatus.Text = receiving
             ? $"/accxyz · {snapshot!.Sender} · ≈ {frequency:F0} Гц"
             : "Нет сигнала /accxyz";
+        if (snapshot is { RejectedSensorSamples: > 0 } sensor)
+            sampleStatus.Text += $" · Отклонено: {sensor.RejectedSensorSamples:N0}";
         vJoyStatus.Text = vJoyError ?? vJoyMessage ?? "Ожидание настройки";
         vJoyStatus.TextColor = vJoyError is not null ? Warning : active || pedalsActive ? Accent : Muted;
         vJoyLibrary.Text = vJoyScan?.DllPath ?? "";

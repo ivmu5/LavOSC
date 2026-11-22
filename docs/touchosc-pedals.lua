@@ -2,8 +2,9 @@ local throttle
 local brake
 local throttleFeedback
 local brakeFeedback
-local nextSend = 0
-local nextHeartbeat = 0
+local nextRefresh = 0
+local lastThrottle
+local lastBrake
 local throttleAddress = '/pedals/throttle'
 local brakeAddress = '/pedals/brake'
 
@@ -14,32 +15,37 @@ function init()
   brakeFeedback = self:findByName('BrakeFeedback', true)
 end
 
-local function sendPedal(fader, feedback, address)
+local function sendPedal(fader, feedback, address, previous, refresh)
   if not fader then
     return
   end
 
   local value = fader.values.touch and fader.values.x or 0
-  fader.values.x = value
-  if feedback then
+  if fader.values.x ~= value then
+    fader.values.x = value
+  end
+  if feedback and feedback.values.x ~= value then
     feedback.values.x = value
   end
-  sendOSC(address, value, { true })
+  if refresh or value ~= previous then
+    sendOSC(address, value, { true })
+  end
+  return value
 end
 
 function update()
   local now = getMillis()
-  if (not throttle and not brake) or now < nextSend then
+  if not throttle and not brake then
     return
   end
 
-  nextSend = now + 40
-  if now >= nextHeartbeat then
+  local refresh = now >= nextRefresh
+  if refresh then
     sendOSC('/pedals/heartbeat', { true })
-    nextHeartbeat = now + 100
+    nextRefresh = now + 100
   end
-  sendPedal(throttle, throttleFeedback, throttleAddress)
-  sendPedal(brake, brakeFeedback, brakeAddress)
+  lastThrottle = sendPedal(throttle, throttleFeedback, throttleAddress, lastThrottle, refresh)
+  lastBrake = sendPedal(brake, brakeFeedback, brakeAddress, lastBrake, refresh)
 end
 
 function onReceiveOSC(message)

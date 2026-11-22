@@ -9,7 +9,10 @@ public interface ISteeringOutput : IDisposable
 }
 
 public sealed record WheelSnapshot(string? Sender, long Samples, bool Fresh, bool Calibrated,
-    bool OutputActive, double? Angle, double Position, float X, float Y, float Z, string? Notice);
+    bool OutputActive, double? Angle, double Position, float X, float Y, float Z, string? Notice)
+{
+    public long RejectedSensorSamples { get; init; }
+}
 
 public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 {
@@ -49,6 +52,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
     private OscFeedbackOrigin? calibrationOrigin;
     private bool disposed;
     private bool outputPaused;
+    private long rejectedSensorSamples;
 
     public string Name => ModuleName;
 
@@ -60,7 +64,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 
     void IOscModule.Configure(OscModuleRegistration registration)
     {
-        registration.Subscribe(AccelerationAddress, ReceiveAcceleration);
+        registration.Subscribe(AccelerationAddress, ReceiveAcceleration, latestOnly: true);
         registration.OnCommand(CalibrateCommand, ReceiveCalibration);
     }
 
@@ -75,7 +79,10 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
                 : null);
             return new(sender, steering.SampleCount, fresh, steering.IsCalibrated,
                 output is not null, fresh ? steering.RelativeAngle : null,
-                fresh ? steering.Position(settings) : 0, x, y, z, status);
+                fresh ? steering.Position(settings) : 0, x, y, z, status)
+            {
+                RejectedSensorSamples = rejectedSensorSamples
+            };
         }
     }
 
@@ -180,9 +187,6 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 
     private void ReceiveAcceleration(OscEnvelope envelope)
     {
-        if (envelope.Message.Types != ",fff" || envelope.Message.Arguments is not [float x, float y, float z])
-            return;
-
         lock (gate)
         {
             if (disposed || (sender is not null && sender != envelope.Sender.IpAddress))
@@ -193,8 +197,14 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             bool wasFresh = steering.IsFresh(now);
             var before = ReadAxes(wasFresh);
             TimeSpan received = Stopwatch.GetElapsedTime(started, envelope.ReceivedTimestamp);
-            if (now - received >= SteeringEstimator.Timeout || !steering.Accept(x, y, z, received, settings))
+            if (now - received >= SteeringEstimator.Timeout)
                 return;
+            if (envelope.Message.Types != ",fff" || envelope.Message.Arguments is not [float x, float y, float z] ||
+                !steering.Accept(x, y, z, received, settings))
+            {
+                rejectedSensorSamples++;
+                return;
+            }
 
             sender ??= envelope.Sender.IpAddress;
             UpdateAxesOrigins(before, ReadAxes(true), envelope, force: !wasFresh);
