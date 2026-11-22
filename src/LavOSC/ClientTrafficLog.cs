@@ -26,17 +26,24 @@ internal sealed class ClientTrafficLog
         if (!clients.TryGetValue(ip, out var client))
             return new(0, 0, []);
 
+        long received;
+        long sent;
+        RawTraffic[] recent;
         lock (client)
-            return new(client.Received, client.Sent, client.Recent.ToArray());
+        {
+            received = client.Received;
+            sent = client.Sent;
+            recent = client.Recent.ToArray();
+        }
+
+        return new(received, sent, recent.Select(entry => new ClientTrafficEntry(entry.At.ToLocalTime(), entry.Sent,
+            entry.RemotePort, entry.LocalPort, entry.Address, FormatArguments(entry.Arguments))).ToArray());
     }
 
     private void Record(string ip, int remotePort, int? localPort, bool sent, string address, IReadOnlyList<object?> arguments)
     {
         var client = clients.GetOrAdd(ip, static _ => new ClientHistory());
-        string values = string.Join(", ", arguments.Take(8).Select(FormatArgument));
-        if (arguments.Count > 8)
-            values += ", …";
-        var entry = new ClientTrafficEntry(DateTimeOffset.Now, sent, remotePort, localPort, Limit(address), values);
+        var entry = new RawTraffic(DateTimeOffset.UtcNow, sent, remotePort, localPort, Limit(address), RetainArguments(arguments));
         lock (client)
         {
             if (sent)
@@ -47,6 +54,31 @@ internal sealed class ClientTrafficLog
                 client.Recent.Dequeue();
             client.Recent.Enqueue(entry);
         }
+    }
+
+    private static IReadOnlyList<object?> RetainArguments(IReadOnlyList<object?> arguments)
+    {
+        int count = Math.Min(arguments.Count, 8);
+        for (int index = 0; index < count; index++)
+        {
+            if (arguments[index] is string { Length: > 100 })
+                return CopyPreview(arguments, count);
+        }
+        return count == arguments.Count ? arguments : CopyPreview(arguments, count);
+    }
+
+    private static object?[] CopyPreview(IReadOnlyList<object?> arguments, int count)
+    {
+        var preview = new object?[arguments.Count > count ? count + 1 : count];
+        for (int index = 0; index < count; index++)
+            preview[index] = arguments[index] is string text ? Limit(text) : arguments[index];
+        return preview;
+    }
+
+    private static string FormatArguments(IReadOnlyList<object?> arguments)
+    {
+        string values = string.Join(", ", arguments.Take(8).Select(FormatArgument));
+        return arguments.Count > 8 ? values + ", …" : values;
     }
 
     private static string FormatArgument(object? value) => value switch
@@ -65,6 +97,9 @@ internal sealed class ClientTrafficLog
     {
         public long Received;
         public long Sent;
-        public Queue<ClientTrafficEntry> Recent { get; } = new(HistoryLimit);
+        public Queue<RawTraffic> Recent { get; } = new(HistoryLimit);
     }
+
+    private readonly record struct RawTraffic(DateTimeOffset At, bool Sent, int RemotePort, int? LocalPort,
+        string Address, IReadOnlyList<object?> Arguments);
 }

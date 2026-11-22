@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 
@@ -17,17 +18,23 @@ public interface IOscModule
 
 public sealed class OscModuleRegistration
 {
-    internal Dictionary<string, Action<OscCommand>> Commands { get; } = new(StringComparer.Ordinal);
-    internal Dictionary<string, Action<OscEnvelope>> Subscriptions { get; } = new(StringComparer.Ordinal);
+    internal Dictionary<string, (Action<OscCommand> Invoke, bool Latest)> Commands { get; } = new(StringComparer.Ordinal);
+    internal Dictionary<string, (Action<OscEnvelope> Invoke, bool Latest)> Subscriptions { get; } = new(StringComparer.Ordinal);
 
-    public void OnCommand(string name, Action<OscCommand> handler)
+    public void OnCommand(string name, Action<OscCommand> handler) => OnCommand(name, handler, latestOnly: false);
+
+    /// <summary>For continuous values, replace a pending update from the same address and IP.</summary>
+    public void OnCommand(string name, Action<OscCommand> handler, bool latestOnly)
     {
         ValidateSegment(name, nameof(name));
         ArgumentNullException.ThrowIfNull(handler);
-        Commands.Add(name, handler);
+        Commands.Add(name, (handler, latestOnly));
     }
 
-    public void Subscribe(string address, Action<OscEnvelope> handler)
+    public void Subscribe(string address, Action<OscEnvelope> handler) => Subscribe(address, handler, latestOnly: false);
+
+    /// <summary>For continuous values, replace a pending update from the same address and IP.</summary>
+    public void Subscribe(string address, Action<OscEnvelope> handler, bool latestOnly)
     {
         ArgumentNullException.ThrowIfNull(address);
         if (!address.StartsWith('/'))
@@ -35,7 +42,7 @@ public sealed class OscModuleRegistration
 
         ValidateSegment(address[1..], nameof(address));
         ArgumentNullException.ThrowIfNull(handler);
-        Subscriptions.Add(address, handler);
+        Subscriptions.Add(address, (handler, latestOnly));
     }
 
     internal static void ValidateSegment(string segment, string parameter)
@@ -47,7 +54,11 @@ public sealed class OscModuleRegistration
     }
 }
 
-public sealed record OscRoutingSnapshot(long DroppedDeliveries, long HandlerErrors, string? LastHandlerError);
+public sealed record OscRoutingSnapshot(long DroppedDeliveries, long HandlerErrors, string? LastHandlerError)
+{
+    public long SupersededDeliveries { get; init; }
+    public TimeSpan PeakQueueDelay { get; init; }
+}
 
 public sealed class OscRouter
 {
@@ -56,6 +67,8 @@ public sealed class OscRouter
     private readonly Dictionary<string, Route> modules = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<Subscription>> subscriptions = new(StringComparer.Ordinal);
     private long droppedDeliveries;
+    private long supersededDeliveries;
+    private long peakQueueTicks;
     private long handlerErrors;
     private string? lastHandlerError;
 
@@ -88,15 +101,18 @@ public sealed class OscRouter
                     listeners = [];
                     subscriptions.Add(address, listeners);
                 }
-                listeners.Add(new(route, handler));
+                listeners.Add(new(route, handler.Invoke, handler.Latest));
             }
             return route;
         }
     }
 
     public OscRoutingSnapshot Snapshot() =>
-        new(Interlocked.Read(ref droppedDeliveries), Interlocked.Read(ref handlerErrors),
-            Volatile.Read(ref lastHandlerError));
+        new(Interlocked.Read(ref droppedDeliveries), Interlocked.Read(ref handlerErrors), Volatile.Read(ref lastHandlerError))
+        {
+            SupersededDeliveries = Interlocked.Read(ref supersededDeliveries),
+            PeakQueueDelay = TimeSpan.FromTicks(Interlocked.Read(ref peakQueueTicks))
+        };
 
     internal void Dispatch(OscEnvelope envelope)
     {
@@ -106,7 +122,7 @@ public sealed class OscRouter
             if (subscriptions.TryGetValue(address, out var listeners))
             {
                 foreach (var subscription in listeners)
-                    Enqueue(subscription.Route, new(envelope, subscription.Handler, null, null));
+                    subscription.Route.Enqueue(new(envelope, subscription.Handler, null, null, subscription.Latest));
             }
 
             int separator = address.IndexOf('/', 1);
@@ -121,19 +137,28 @@ public sealed class OscRouter
             if (!route.Commands.TryGetValue(commandName, out var handler))
                 return;
 
-            string[] parts = next < 0 ? [] : address[(next + 1)..].Split('/');
-            if (parts.Any(string.IsNullOrEmpty))
-                return;
+            IReadOnlyList<string> parts = [];
+            if (next >= 0)
+            {
+                string[] segments = address[(next + 1)..].Split('/');
+                if (Array.Exists(segments, string.IsNullOrEmpty))
+                    return;
+                parts = Array.AsReadOnly(segments);
+            }
 
-            var command = new OscCommand(route.Name, commandName, Array.AsReadOnly(parts), envelope);
-            Enqueue(route, new(envelope, null, handler, command));
+            var command = new OscCommand(route.Name, commandName, parts, envelope);
+            route.Enqueue(new(envelope, null, handler.Invoke, command, handler.Latest));
         }
     }
 
-    private void Enqueue(Route route, Delivery delivery)
+    private void TrackQueueDelay(long received)
     {
-        if (!route.Queue.Writer.TryWrite(delivery))
-            Interlocked.Increment(ref droppedDeliveries);
+        long ticks = Stopwatch.GetElapsedTime(received).Ticks;
+        long peak;
+        do
+        {
+            peak = Interlocked.Read(ref peakQueueTicks);
+        } while (ticks > peak && Interlocked.CompareExchange(ref peakQueueTicks, ticks, peak) != peak);
     }
 
     private void Unregister(Route route)
@@ -149,31 +174,30 @@ public sealed class OscRouter
                 listeners.RemoveAll(subscription => ReferenceEquals(subscription.Route, route));
             foreach (string address in subscriptions.Where(entry => entry.Value.Count == 0).Select(entry => entry.Key).ToArray())
                 subscriptions.Remove(address);
-            route.Queue.Writer.TryComplete();
+            route.Complete();
         }
     }
 
-    private sealed record Subscription(Route Route, Action<OscEnvelope> Handler);
+    private sealed record Subscription(Route Route, Action<OscEnvelope> Handler, bool Latest);
     private readonly record struct Delivery(OscEnvelope Envelope, Action<OscEnvelope>? Subscriber,
-        Action<OscCommand>? Handler, OscCommand? Command);
+        Action<OscCommand>? Handler, OscCommand? Command, bool Latest);
 
     private sealed class Route : IDisposable
     {
         private readonly OscRouter router;
         private readonly object deliveryGate;
+        private const int QueueCapacity = 64;
+        private readonly object queueGate = new();
+        private readonly List<Delivery> queue = new();
+        private readonly Channel<bool> ready = Channel.CreateBounded<bool>(1);
         private int disposed;
 
         public string Name { get; }
         public string[] Names { get; }
-        public Dictionary<string, Action<OscCommand>> Commands { get; }
-        public Channel<Delivery> Queue { get; } = Channel.CreateBounded<Delivery>(new BoundedChannelOptions(64)
-        {
-            SingleReader = true,
-            FullMode = BoundedChannelFullMode.Wait
-        });
+        public Dictionary<string, (Action<OscCommand> Invoke, bool Latest)> Commands { get; }
 
-        public Route(OscRouter router, string name, string[] names, Dictionary<string, Action<OscCommand>> commands,
-            object deliveryGate)
+        public Route(OscRouter router, string name, string[] names,
+            Dictionary<string, (Action<OscCommand> Invoke, bool Latest)> commands, object deliveryGate)
         {
             this.router = router;
             this.deliveryGate = deliveryGate;
@@ -181,6 +205,60 @@ public sealed class OscRouter
             Names = names;
             Commands = new(commands, StringComparer.Ordinal);
             _ = Task.Run(ProcessAsync);
+        }
+
+        public void Enqueue(Delivery delivery)
+        {
+            lock (queueGate)
+            {
+                if (delivery.Latest)
+                {
+                    // A discrete command is an ordering barrier. Move the replacement to the tail to keep arrival order.
+                    for (int index = queue.Count - 1; index >= 0 && queue[index].Latest; index--)
+                    {
+                        var previous = queue[index].Envelope;
+                        if (previous.Message.Address != delivery.Envelope.Message.Address ||
+                            previous.Sender.IpAddress != delivery.Envelope.Sender.IpAddress)
+                            continue;
+
+                        queue.RemoveAt(index);
+                        Interlocked.Increment(ref router.supersededDeliveries);
+                        break;
+                    }
+                }
+                if (queue.Count == QueueCapacity)
+                {
+                    Interlocked.Increment(ref router.droppedDeliveries);
+                    return;
+                }
+                queue.Add(delivery);
+                if (queue.Count == 1)
+                    ready.Writer.TryWrite(true);
+            }
+        }
+
+        public void Complete()
+        {
+            lock (queueGate)
+            {
+                queue.Clear();
+                ready.Writer.TryComplete();
+            }
+        }
+
+        private bool TryTake(out Delivery delivery)
+        {
+            lock (queueGate)
+            {
+                if (queue.Count == 0)
+                {
+                    delivery = default;
+                    return false;
+                }
+                delivery = queue[0];
+                queue.RemoveAt(0);
+                return true;
+            }
         }
 
         public void Dispose()
@@ -191,24 +269,28 @@ public sealed class OscRouter
 
         private async Task ProcessAsync()
         {
-            await foreach (Delivery delivery in Queue.Reader.ReadAllAsync().ConfigureAwait(false))
+            await foreach (bool _ in ready.Reader.ReadAllAsync().ConfigureAwait(false))
             {
-                lock (deliveryGate)
+                while (TryTake(out var delivery))
                 {
-                    if (Volatile.Read(ref disposed) != 0)
-                        break;
+                    lock (deliveryGate)
+                    {
+                        if (Volatile.Read(ref disposed) != 0)
+                            return;
 
-                    try
-                    {
-                        if (delivery.Command is { } command)
-                            delivery.Handler!(command);
-                        else
-                            delivery.Subscriber!(delivery.Envelope);
-                    }
-                    catch (Exception error)
-                    {
-                        Volatile.Write(ref router.lastHandlerError, $"{Name}: {error.Message}");
-                        Interlocked.Increment(ref router.handlerErrors);
+                        router.TrackQueueDelay(delivery.Envelope.ReceivedTimestamp);
+                        try
+                        {
+                            if (delivery.Command is { } command)
+                                delivery.Handler!(command);
+                            else
+                                delivery.Subscriber!(delivery.Envelope);
+                        }
+                        catch (Exception error)
+                        {
+                            Volatile.Write(ref router.lastHandlerError, $"{Name}: {error.Message}");
+                            Interlocked.Increment(ref router.handlerErrors);
+                        }
                     }
                 }
             }

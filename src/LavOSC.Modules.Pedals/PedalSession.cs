@@ -20,6 +20,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan TickPeriod = TimeSpan.FromMilliseconds(16);
+    private const double SmoothingMilliseconds = 15;
     private static readonly IReadOnlyList<object?> Neutral = Array.AsReadOnly<object?>([0f]);
     private readonly object gate = new();
     private readonly Timer timer;
@@ -54,9 +55,9 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
 
     void IOscModule.Configure(OscModuleRegistration registration)
     {
-        registration.OnCommand(ThrottleCommand, command => Receive(command, throttle));
-        registration.OnCommand(BrakeCommand, command => Receive(command, brake));
-        registration.OnCommand(HeartbeatCommand, ReceiveHeartbeat);
+        registration.OnCommand(ThrottleCommand, command => Receive(command, throttle), latestOnly: true);
+        registration.OnCommand(BrakeCommand, command => Receive(command, brake), latestOnly: true);
+        registration.OnCommand(HeartbeatCommand, ReceiveHeartbeat, latestOnly: true);
     }
 
     public PedalSnapshot Snapshot()
@@ -223,7 +224,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             long now = Stopwatch.GetTimestamp();
             double milliseconds = Stopwatch.GetElapsedTime(lastTick, now).TotalMilliseconds;
             lastTick = now;
-            double ratio = 1 - Math.Exp(-milliseconds / 35);
+            double ratio = 1 - Math.Exp(-milliseconds / SmoothingMilliseconds);
             CheckInputTimeout(now);
             bool throttleFresh = IsFresh(throttle, now);
             bool brakeFresh = IsFresh(brake, now);
