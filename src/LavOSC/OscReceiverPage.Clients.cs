@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Net;
 using System.Text.Json;
+using Laveyana.LavOSC.Core;
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Dispatching;
@@ -19,6 +21,8 @@ internal sealed partial class OscReceiverPage
     private readonly Label activeClient = Heading("", 19);
     private readonly Label trafficCounts = Caption();
     private readonly Label trafficHistory = Caption();
+    private Label? feedbackStatus;
+    private FeedbackDelivery? feedbackDelivery;
     private long syncedClientVersion = -1;
     private Grid clientsView = null!;
     private CollectionView clientsList = null!;
@@ -28,17 +32,22 @@ internal sealed partial class OscReceiverPage
     private Grid MakeClientsView()
     {
         clientsList = MakeClientsList(compact: false);
+        var selectionPrompt = Card(Caption("Выбери клиента, чтобы настроить отправку OSC."));
+        var feedback = new ContentView { Content = selectionPrompt };
         trafficHistory.FontFamily = "Consolas";
         trafficHistory.FontSize = 13;
         var statistics = Card(new VerticalStackLayout
         {
             Spacing = 12,
-            Children = { Row(activeClient, trafficCounts), Heading("Журнал входящих OSC", 15), trafficHistory }
+            Children = { Row(activeClient, trafficCounts), Heading("Журнал OSC", 15), trafficHistory }
         });
         statistics.IsVisible = false;
         clientsList.SelectionChanged += (_, _) =>
         {
-            statistics.IsVisible = clientsList.SelectedItem is OscClientEntry;
+            var client = clientsList.SelectedItem as OscClientEntry;
+            feedbackStatus = null;
+            feedback.Content = client is null ? selectionPrompt : MakeClientFeedback(client);
+            statistics.IsVisible = client is not null;
             RefreshClientTraffic();
         };
         var panes = MakeColumns();
@@ -48,16 +57,61 @@ internal sealed partial class OscReceiverPage
         panes.Add(listPanel);
         panes.Add(new ScrollView
         {
-            Content = new VerticalStackLayout { Spacing = 12, Children = { MakeClientAccessSettings(), statistics } }
+            Content = new VerticalStackLayout { Spacing = 12, Children = { feedback, MakeClientAccessSettings(), statistics } }
         }, 1);
-        var view = new Grid
+        return panes;
+    }
+
+    private View MakeClientFeedback(OscClientEntry client)
+    {
+        var toggle = new Switch { OnColor = Accent };
+        toggle.SetBinding(Switch.IsToggledProperty, nameof(OscClientEntry.FeedbackEnabled), BindingMode.OneWay);
+        SemanticProperties.SetDescription(toggle, "Отправлять OSC этому клиенту");
+        toggle.Toggled += (_, args) =>
         {
-            RowSpacing = 16,
-            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
+            if (client.FeedbackEnabled == args.Value)
+                return;
+            clientAccess.SetFeedback(client.Address, client.FeedbackPort, args.Value);
+            SyncClients();
         };
-        view.Add(PageHeading("Клиенты"));
-        view.Add(panes, 0, 1);
-        return view;
+
+        var port = MakeEntry(Keyboard.Numeric);
+        port.SetBinding(Entry.TextProperty, new Binding(nameof(OscClientEntry.FeedbackPort), BindingMode.OneWay, stringFormat: "{0}"));
+        var result = Caption();
+        result.IsVisible = false;
+        var save = MakeButton("Сохранить порт");
+        save.Clicked += (_, _) =>
+        {
+            if (!TryNumber(port.Text, 1, 65535, out int value))
+            {
+                result.Text = "Укажи порт от 1 до 65535.";
+                result.TextColor = Warning;
+            }
+            else
+            {
+                clientAccess.SetFeedback(client.Address, value, client.FeedbackEnabled);
+                SyncClients();
+                result.Text = "Порт сохранён.";
+                result.TextColor = PulseVisuals.Success;
+            }
+            result.IsVisible = true;
+        };
+        port.TextChanged += (_, _) => result.IsVisible = false;
+        var state = Caption();
+        state.SetBinding(Label.TextProperty, nameof(OscClientEntry.FeedbackState));
+        var delivery = feedbackStatus = Caption();
+        RefreshFeedbackStatus();
+        return Card(new VerticalStackLayout
+        {
+            BindingContext = client, Spacing = 9,
+            Children =
+            {
+                Heading($"Отправка OSC · {client.Address}", 18),
+                Row(Caption("Отправлять данные модулей"), toggle),
+                Row(Field("UDP-порт приёма клиента", port), save),
+                result, state, delivery
+            }
+        });
     }
 
     private View MakeDashboardClients()
@@ -66,14 +120,12 @@ internal sealed partial class OscReceiverPage
         showAll.Clicked += (_, _) => openClients();
         var panel = new Grid
         {
-            RowSpacing = 10,
+            RowSpacing = 10, Padding = new Thickness(16, 12, 16, 16), BackgroundColor = PulseVisuals.Surface,
             RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
         };
         panel.Add(Row(Heading("Клиенты", 18), showAll));
         panel.Add(MakeClientsList(compact: true), 0, 1);
-        var card = Card(panel);
-        card.BackgroundColor = PulseVisuals.Surface;
-        return card;
+        return panel;
     }
 
     private View MakeClientAccessSettings()
@@ -159,7 +211,7 @@ internal sealed partial class OscReceiverPage
     {
         ItemsSource = clients,
         SelectionMode = compact ? SelectionMode.None : SelectionMode.Single,
-        ItemSizingStrategy = ItemSizingStrategy.MeasureFirstItem,
+        ItemSizingStrategy = ItemSizingStrategy.MeasureAllItems,
         EmptyView = Caption("Клиенты OSC не обнаружены."),
         ItemTemplate = new DataTemplate(() =>
         {
@@ -173,7 +225,10 @@ internal sealed partial class OscReceiverPage
                 Binding = new Binding(nameof(OscClientEntry.Allowed)), Value = true,
                 Setters = { new Setter { Property = Label.TextColorProperty, Value = PulseVisuals.Success } }
             });
-            var info = new VerticalStackLayout { Spacing = 2, Children = { address, state } };
+            var outgoing = Caption();
+            outgoing.SetBinding(Label.TextProperty, nameof(OscClientEntry.FeedbackState));
+            outgoing.SetBinding(IsVisibleProperty, nameof(OscClientEntry.FeedbackEnabled));
+            var info = new VerticalStackLayout { Spacing = 2, Children = { address, state, outgoing } };
 
             View access;
             if (compact)
@@ -231,8 +286,8 @@ internal sealed partial class OscReceiverPage
 
     private void ApplyClientAccess()
     {
-        ResetBlockedSources();
         SyncClients();
+        ResetBlockedSources();
     }
 
     private void LoadClients()
@@ -264,14 +319,14 @@ internal sealed partial class OscReceiverPage
         var state = clientAccess.Snapshot();
         foreach (var rule in state.Clients)
         {
-            bool allowed = state.Mode == ClientAccessMode.Whitelist ? rule.Allowed : !rule.Blocked;
+            bool allowed = rule.IsAllowed(state.Mode);
             if (clientsByAddress.TryGetValue(rule.Address, out var existing))
             {
-                existing.SetAllowed(allowed);
+                existing.Update(rule, allowed);
             }
             else
             {
-                var client = new OscClientEntry(rule.Address, allowed);
+                var client = new OscClientEntry(rule, allowed);
                 clientsByAddress.Add(rule.Address, client);
                 clients.Add(client);
             }
@@ -279,18 +334,55 @@ internal sealed partial class OscReceiverPage
 
         Preferences.Default.Set(ClientsKey, JsonSerializer.Serialize(state));
         syncedClientVersion = version;
+        ConfigureFeedback();
     }
 
     private void StartClientMonitoring()
     {
+        feedbackDelivery = new(clientTraffic.Sent);
         clientTimer = Dispatcher.CreateTimer();
         clientTimer.Interval = TimeSpan.FromMilliseconds(500);
         clientTimer.Tick += (_, _) =>
         {
             SyncClients();
+            RefreshFeedbackStatus();
             RefreshClientTraffic();
         };
         clientTimer.Start();
+    }
+
+    private void ConfigureFeedback()
+    {
+        if (closed || feedbackDelivery is null)
+            return;
+
+        var recipients = clients.Where(client => client.Allowed && client.FeedbackEnabled)
+            .Select(client => new IPEndPoint(IPAddress.Parse(client.Address), client.FeedbackPort)).ToArray();
+        var sources = new List<(string, IOscFeedbackSource)>();
+        if (receiver?.Snapshot().Listening == true && recipients.Length > 0)
+        {
+            foreach (ModuleEntry module in moduleEntries.Where(entry => entry.IsEnabled && entry.FeedbackEnabled))
+            {
+                IOscFeedbackSource? source = module == wheelModule ? session : module == pedalsModule ? pedals
+                    : module.Extension as IOscFeedbackSource;
+                if (source is not null)
+                    sources.Add((module.Name, source));
+            }
+        }
+        feedbackDelivery.Configure(recipients, sources.ToArray());
+    }
+
+    private void RefreshFeedbackStatus()
+    {
+        if (feedbackStatus is null)
+            return;
+        var status = feedbackDelivery?.Snapshot();
+        feedbackStatus.IsVisible = clientsList.SelectedItem is OscClientEntry { Allowed: true, FeedbackEnabled: true } &&
+            status is { Recipients: > 0 };
+        feedbackStatus.TextColor = status?.Failure is not null ? Warning : Muted;
+        feedbackStatus.Text = status?.Failure ?? (status?.HasSources == true
+            ? $"Отправлено за сеанс · {status.PacketsSent:N0}"
+            : "Ожидание приёма OSC или включённого источника данных.");
     }
 
     private void RefreshClientTraffic()
@@ -300,9 +392,9 @@ internal sealed partial class OscReceiverPage
 
         var snapshot = clientTraffic.Snapshot(client.Address);
         activeClient.Text = client.Address;
-        trafficCounts.Text = $"Получено · {snapshot.Received:N0}";
+        trafficCounts.Text = $"Входящие · {snapshot.Received:N0}   Исходящие · {snapshot.Sent:N0}";
         trafficHistory.Text = snapshot.Recent.Length == 0 ? "Сообщений пока нет." : string.Join("\n\n",
             snapshot.Recent.Reverse().Select(entry =>
-                $"{entry.At:HH:mm:ss.fff} · {client.Address}:{entry.RemotePort} → LavOSC:{entry.LocalPort}\n{entry.Address} {entry.Arguments}"));
+                $"{entry.At:HH:mm:ss.fff} · {(entry.Sent ? "Исходящее" : "Входящее")} · UDP {entry.RemotePort}\n{entry.Address} {entry.Arguments}"));
     }
 }

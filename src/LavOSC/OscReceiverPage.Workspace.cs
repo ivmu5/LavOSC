@@ -5,6 +5,8 @@ using Microsoft.Maui.Storage;
 
 namespace Laveyana.LavOSC;
 
+internal enum WorkspaceSection { Dashboard, Modules, Clients, Settings }
+
 internal sealed partial class OscReceiverPage
 {
     private readonly DashboardGrid pinnedCards = new(3);
@@ -27,13 +29,38 @@ internal sealed partial class OscReceiverPage
     private Action openModules = null!;
     private Action openClients = null!;
 
-    internal void SetCaptionInset(double height) => workspace.Margin = new Thickness(0, height, 0, 0);
+    internal static IReadOnlyList<(WorkspaceSection Section, string Title)> WorkspaceTabs { get; } =
+        Array.AsReadOnly<(WorkspaceSection, string)>([
+            (WorkspaceSection.Dashboard, "Главная"), (WorkspaceSection.Modules, "Модули"),
+            (WorkspaceSection.Clients, "Клиенты"), (WorkspaceSection.Settings, "Настройки")
+        ]);
+    internal event Action<WorkspaceSection>? SectionChanged;
+    internal WorkspaceSection CurrentSection { get; private set; }
+
+    private Action<WorkspaceSection, ModuleEntry?> showSection = null!;
+    private Grid fallbackNavigation = null!;
+    private Grid dashboardContent = null!;
+    private ContentView dashboardClientSlot = null!;
+    private View[] workspacePages = [];
+
+    internal void Navigate(WorkspaceSection section) => showSection(section, null);
+
+    internal void UseNativeCaption() => fallbackNavigation.IsVisible = false;
+
+    internal void SetCaptionInset(double height)
+    {
+        var contentMargin = new Thickness(16, height + 10, 16, 12);
+        dashboardContent.Margin = contentMargin;
+        dashboardClientSlot.Margin = new Thickness(0, height, 0, 0);
+        foreach (View page in workspacePages.Skip(1))
+            page.Margin = contentMargin;
+    }
 
     private Grid MakeWorkspace()
     {
         wheelBody = new VerticalStackLayout
         {
-            Spacing = 9,
+            Spacing = 12, VerticalOptions = LayoutOptions.Center,
             Children =
             {
                 Row(Metric("Угол", angle), Metric("Ось X", axisValue)), gaugeView, sampleStatus, sensorValues, notice,
@@ -59,45 +86,41 @@ internal sealed partial class OscReceiverPage
         catalog = MakeCatalog();
         clientsView = MakeClientsView();
         var settings = MakeSettings();
-        var sections = new[]
-        {
-            (Page: (View)dashboard, Button: NavButton("osc_dashboard.png", "Главная"), Title: "Главная"),
-            (Page: catalog, Button: NavButton("osc_modules.png", "Модули"), Title: "Модули"),
-            (Page: clientsView, Button: NavButton("osc_clients.png", "Клиенты"), Title: "Клиенты"),
-            (Page: settings, Button: NavButton("osc_settings.png", "Настройки"), Title: "Настройки")
-        };
-
-        var navigation = new Grid
-        {
-            BackgroundColor = PulseVisuals.Surface,
-            Padding = new Thickness(9, 18), RowSpacing = 7,
-            RowDefinitions =
-            {
-                new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Star), new RowDefinition(GridLength.Auto)
-            }
-        };
+        workspacePages = [dashboard, catalog, clientsView, settings];
         var pages = new Grid();
-        openCatalogModule = entry => Show(catalog, entry);
-        openModules = () => Show(catalog);
-        openClients = () => Show(clientsView);
+        foreach (View page in workspacePages)
+            pages.Add(page);
+
+        var navItems = new HorizontalStackLayout
+        {
+            Padding = new Thickness(14, 6), Spacing = 8, BackgroundColor = PulseVisuals.Surface,
+            Children = { Heading("LavOSC", 16) }
+        };
+        var buttons = new Dictionary<WorkspaceSection, Button>();
+        foreach (var (section, title) in WorkspaceTabs)
+        {
+            var button = MakeButton(title);
+            button.MinimumHeightRequest = 32;
+            button.Clicked += (_, _) => Navigate(section);
+            buttons.Add(section, button);
+            navItems.Children.Add(button);
+        }
+        fallbackNavigation = new Grid { Children = { navItems } };
+
+        showSection = Show;
+        openCatalogModule = entry => Show(WorkspaceSection.Modules, entry);
+        openModules = () => Navigate(WorkspaceSection.Modules);
+        openClients = () => Navigate(WorkspaceSection.Clients);
         openClient = client =>
         {
-            Show(clientsView);
+            Navigate(WorkspaceSection.Clients);
             clientsList.SelectedItem = client;
             clientsList.ScrollTo(client, position: ScrollToPosition.MakeVisible, animate: false);
         };
-        for (int index = 0; index < sections.Length; index++)
-        {
-            var (page, button, _) = sections[index];
-            page.Margin = new Thickness(20, 18, 20, 18);
-            pages.Add(page);
-            navigation.Add(button, 0, index == 3 ? 4 : index);
-            button.Clicked += (_, _) => Show(page);
-        }
 
-        void Show(View page, ModuleEntry? selectedModule = null)
+        void Show(WorkspaceSection section, ModuleEntry? selectedModule)
         {
+            View page = workspacePages[(int)section];
             if (activeSection == page)
             {
                 if (selectedModule is not null)
@@ -112,55 +135,32 @@ internal sealed partial class OscReceiverPage
             moduleDetails.Children.Clear();
             oscReferenceScroll.Content = null;
             activeSection = page;
-            foreach (var (panel, button, _) in sections)
+            CurrentSection = section;
+            for (int index = 0; index < workspacePages.Length; index++)
+                workspacePages[index].IsVisible = index == (int)section;
+            foreach (var (id, button) in buttons)
             {
-                panel.IsVisible = panel == page;
-                button.BackgroundColor = panel.IsVisible ? PulseVisuals.Selected : Colors.Transparent;
-                button.BorderColor = panel.IsVisible ? Accent.WithAlpha(.40f) : Colors.Transparent;
-                button.TextColor = panel.IsVisible ? Accent : Text;
+                button.BackgroundColor = id == section ? PulseVisuals.Selected : Colors.Transparent;
+                button.TextColor = id == section ? Accent : Text;
             }
-            if (page == catalog)
+            if (section == WorkspaceSection.Modules)
                 FilterModules(selectedModule);
-            else if (page == dashboard)
+            else if (section == WorkspaceSection.Dashboard)
                 ShowPinnedModules();
-            else if (page == clientsView)
+            else if (section == WorkspaceSection.Clients)
                 RefreshClientTraffic();
+            SectionChanged?.Invoke(section);
         }
 
-        var navigationWidth = new ColumnDefinition(new GridLength(62));
         var layout = new Grid
         {
-            ColumnDefinitions = { navigationWidth, new ColumnDefinition(GridLength.Star) }
+            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
         };
-        layout.Add(navigation);
-        layout.Add(pages, 1);
-        bool expanded = false;
-        layout.SizeChanged += (_, _) =>
-        {
-            bool next = layout.Width >= 1180;
-            if (next == expanded)
-                return;
-            expanded = next;
-            navigationWidth.Width = next ? 160 : 62;
-            foreach (var (_, button, title) in sections)
-                button.Text = next ? title : "";
-        };
-        Show(dashboard);
+        layout.Add(fallbackNavigation);
+        layout.Add(pages, 0, 1);
+        SetCaptionInset(0);
+        Navigate(WorkspaceSection.Dashboard);
         return layout;
-    }
-
-    private static Button NavButton(string icon, string title)
-    {
-        var button = MakeButton("");
-        button.ImageSource = icon;
-        button.ContentLayout = new Button.ButtonContentLayout(Button.ButtonContentLayout.ImagePosition.Left, 8);
-        button.HeightRequest = 44;
-        button.Padding = new Thickness(7, 5);
-        button.BackgroundColor = Colors.Transparent;
-        button.BorderWidth = 1;
-        ToolTipProperties.SetText(button, title);
-        SemanticProperties.SetDescription(button, title);
-        return button;
     }
 
     private Grid MakeDashboard()
@@ -188,65 +188,81 @@ internal sealed partial class OscReceiverPage
         var catalogButton = MakeButton("Каталог");
         catalogButton.Clicked += (_, _) => openModules();
         var inlineClients = new ContentView { HeightRequest = 260, IsVisible = false };
+        var moduleHeading = Row(Heading("Закреплённые модули", 20), catalogButton);
         var mainBody = new VerticalStackLayout
         {
-            Spacing = 14,
-            Children = { summaries, Row(Heading("Закреплённые модули", 20), catalogButton), pinnedCards, emptyDashboard, inlineClients }
+            Spacing = 12,
+            Children = { summaries, moduleHeading, pinnedCards, emptyDashboard, inlineClients }
         };
         var content = new ScrollView { Content = mainBody };
-        diagnosticsToggle.Clicked += async (_, _) =>
+        var clientsPanel = MakeDashboardClients();
+        dashboardClientSlot = new ContentView { Content = clientsPanel };
+        var sidebar = new Grid { BackgroundColor = PulseVisuals.Surface, Children = { dashboardClientSlot } };
+        var right = new ColumnDefinition(280);
+        var dashboard = new Grid
         {
-            summaries.IsVisible = !summaries.IsVisible;
-            diagnosticsToggle.Text = summaries.IsVisible ? "Скрыть диагностику" : "IP и диагностика";
-            if (summaries.IsVisible && content.ScrollY > 0)
-                await content.ScrollToAsync(0, 0, animated: false);
-        };
-        View clientsPanel = MakeDashboardClients();
-        var sidebar = new ContentView();
-        var right = new ColumnDefinition(new GridLength(280));
-        var body = new Grid
-        {
-            ColumnSpacing = 14,
             ColumnDefinitions = { new ColumnDefinition(GridLength.Star), right }
         };
-        body.Add(content);
-        body.Add(sidebar, 1);
-        sidebar.Content = clientsPanel;
-        bool sideBySide = true;
-        body.SizeChanged += (_, _) =>
-        {
-            if (body.Width <= 0)
-                return;
-            bool next = body.Width >= 890;
-            right.Width = next ? Math.Clamp(Math.Floor(body.Width * .28), 260, 310) : 0;
-            if (sideBySide == next)
-                return;
-            sideBySide = next;
-            sidebar.Content = null;
-            inlineClients.Content = null;
-            sidebar.IsVisible = next;
-            inlineClients.IsVisible = !next;
-            if (next)
-                sidebar.Content = clientsPanel;
-            else
-                inlineClients.Content = clientsPanel;
-        };
+
         var status = new Grid
         {
-            ColumnSpacing = 18,
-            ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) }
+            ColumnSpacing = 12,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Auto)
+            }
         };
         status.Add(StatusMetric("Приём OSC", oscOverview, oscIndicator));
         status.Add(StatusMetric("Выход vJoy", vJoyOverview, vJoyIndicator), 1);
         status.Add(listen, 2);
-        var dashboard = new Grid
+        status.Add(diagnosticsToggle, 3);
+
+        dashboardContent = new Grid
         {
-            RowSpacing = 16,
-            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
+            RowSpacing = 12,
+            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
         };
-        dashboard.Add(Row(PageHeading("Главная"), diagnosticsToggle));
-        dashboard.Add(Card(status), 0, 1);
-        dashboard.Add(body, 0, 2);
+        dashboardContent.Add(Card(status));
+        dashboardContent.Add(content, 0, 1);
+        dashboard.Add(dashboardContent);
+        dashboard.Add(sidebar, 1);
+
+        bool sideBySide = true;
+        void UpdateCardHeight() => pinnedCards.MinimumSingleRowHeight = sideBySide && !summaries.IsVisible
+            ? Math.Max(0, content.Height - moduleHeading.Height - mainBody.Spacing)
+            : 0;
+
+        content.SizeChanged += (_, _) => UpdateCardHeight();
+        moduleHeading.SizeChanged += (_, _) => UpdateCardHeight();
+        diagnosticsToggle.Clicked += async (_, _) =>
+        {
+            summaries.IsVisible = !summaries.IsVisible;
+            diagnosticsToggle.Text = summaries.IsVisible ? "Скрыть диагностику" : "IP и диагностика";
+            UpdateCardHeight();
+            if (summaries.IsVisible && content.ScrollY > 0)
+                await content.ScrollToAsync(0, 0, animated: false);
+        };
+        dashboard.SizeChanged += (_, _) =>
+        {
+            if (dashboard.Width <= 0)
+                return;
+            bool next = dashboard.Width >= 900;
+            right.Width = next ? Math.Clamp(Math.Floor(dashboard.Width * .27), 260, 330) : 0;
+            if (sideBySide == next)
+                return;
+
+            sideBySide = next;
+            dashboardClientSlot.Content = null;
+            inlineClients.Content = null;
+            sidebar.IsVisible = next;
+            inlineClients.IsVisible = !next;
+            if (next)
+                dashboardClientSlot.Content = clientsPanel;
+            else
+                inlineClients.Content = clientsPanel;
+            UpdateCardHeight();
+        };
         return dashboard;
     }
 
@@ -268,14 +284,6 @@ internal sealed partial class OscReceiverPage
         listen.TextColor = listening ? Text : Canvas;
     }
 
-    private static Label PageHeading(string text)
-    {
-        var heading = Heading(text, 32);
-        heading.VerticalOptions = LayoutOptions.Center;
-        SemanticProperties.SetHeadingLevel(heading, SemanticHeadingLevel.Level1);
-        return heading;
-    }
-
     private static View Metric(string label, Label value) =>
         new VerticalStackLayout { Spacing = 2, Children = { Caption(label), value } };
 
@@ -284,11 +292,19 @@ internal sealed partial class OscReceiverPage
         WidthRequest = 7, HeightRequest = 7, CornerRadius = 4, VerticalOptions = LayoutOptions.Center
     };
 
-    private static View StatusMetric(string title, Label value, BoxView indicator) =>
-        new HorizontalStackLayout
+    private static View StatusMetric(string title, Label value, BoxView indicator)
+    {
+        value.LineBreakMode = LineBreakMode.TailTruncation;
+        value.MaxLines = 1;
+        var metric = new Grid
         {
-            Spacing = 10, VerticalOptions = LayoutOptions.Center, Children = { indicator, Metric(title, value) }
+            ColumnSpacing = 10, VerticalOptions = LayoutOptions.Center,
+            ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Star) }
         };
+        metric.Add(indicator);
+        metric.Add(Metric(title, value), 1);
+        return metric;
+    }
 
     private ScrollView MakeSettings()
     {
@@ -310,7 +326,7 @@ internal sealed partial class OscReceiverPage
                 }
             })
         ]);
-        return new ScrollView { Content = new VerticalStackLayout { Spacing = 18, Children = { PageHeading("Настройки"), cards } } };
+        return new ScrollView { Content = cards };
     }
 
     private void ShowPinnedModules()
@@ -395,16 +411,19 @@ internal sealed partial class OscReceiverPage
         header.Add(title);
         header.Add(state, 1);
         header.Add(unpin, 2);
-        var body = new VerticalStackLayout
+        var body = new Grid
         {
-            BindingContext = entry, Spacing = 12, Children = { header, MakeModuleError() }
+            BindingContext = entry, RowSpacing = 8,
+            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
         };
+        body.Add(header);
+        body.Add(MakeModuleError(), 0, 1);
         if (entry == wheelModule)
-            body.Children.Add(wheelSlot = new ContentView { Content = wheelBody });
+            body.Add(wheelSlot = new ContentView { Content = wheelBody }, 0, 2);
         else if (entry == pedalsModule)
-            body.Children.Add(pedalsSlot = new ContentView { Content = pedalsBody });
+            body.Add(pedalsSlot = new ContentView { Content = pedalsBody }, 0, 2);
         else
-            body.Children.Add(Caption(entry.Address));
+            body.Add(Caption(entry.Address), 0, 2);
         return Card(body);
     }
 

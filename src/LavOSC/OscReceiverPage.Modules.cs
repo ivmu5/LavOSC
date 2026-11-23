@@ -19,7 +19,7 @@ internal sealed partial class OscReceiverPage
 
     private View MakePedalBody() => new VerticalStackLayout
     {
-        Spacing = 10,
+        Spacing = 12, VerticalOptions = LayoutOptions.Center,
         Children =
         {
             PedalMeter("Газ", "Ось Y", throttleBar, throttleValue),
@@ -91,9 +91,9 @@ internal sealed partial class OscReceiverPage
     private void InitializeModules(IReadOnlyList<IOscModule> modules, IPreferences preferences)
     {
         wheelModule = new("wheel", "Руль", "WheelModuleEnabled",
-            preferences.Get("WheelModuleEnabled", true), preferences.Get("OscModulePinned.wheel", true));
+            preferences.Get("WheelModuleEnabled", true), preferences.Get("OscModulePinned.wheel", true), supportsFeedback: true);
         pedalsModule = new("pedals", "Педали", "PedalsModuleEnabled",
-            preferences.Get("PedalsModuleEnabled", false), preferences.Get("OscModulePinned.pedals", true));
+            preferences.Get("PedalsModuleEnabled", false), preferences.Get("OscModulePinned.pedals", true), supportsFeedback: true);
         moduleEntries.Add(wheelModule);
         moduleEntries.Add(pedalsModule);
 
@@ -120,6 +120,8 @@ internal sealed partial class OscReceiverPage
             }
         }
         moduleEntries.AddRange(extensions.OrderBy(module => module.Title, StringComparer.CurrentCultureIgnoreCase));
+        foreach (ModuleEntry entry in moduleEntries.Where(entry => entry.SupportsFeedback))
+            entry.SetFeedback(preferences.Get(entry.FeedbackKey, true));
     }
 
     private bool TryEnableExtension(ModuleEntry entry)
@@ -174,21 +176,27 @@ internal sealed partial class OscReceiverPage
             entry.SetError(null);
         entry.SetEnabled(enabled);
         Preferences.Default.Set(entry.EnabledKey, enabled);
+        ConfigureFeedback();
         Refresh();
     }
 
     private void ResetBlockedSources()
     {
+        bool changed = false;
         if (session?.Snapshot().Sender is { } wheelSource && !clientAccess.IsAllowed(wheelSource))
         {
             DetachWheel();
             AttachWheel();
+            changed = true;
         }
         if (pedals?.Snapshot().Sender is { } pedalSource && !clientAccess.IsAllowed(pedalSource))
         {
             DetachPedals();
             AttachPedals();
+            changed = true;
         }
+        if (changed)
+            ConfigureFeedback();
     }
 
     private void CloseExtensionModules()

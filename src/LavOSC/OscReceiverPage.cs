@@ -150,6 +150,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         closed = true;
         timer.Stop();
         clientTimer.Stop();
+        feedbackDelivery?.Dispose();
         lifetime.Cancel();
         if (!working)
             lifetime.Dispose();
@@ -188,6 +189,7 @@ internal sealed partial class OscReceiverPage : ContentPage
             }
         }
 
+        ConfigureFeedback();
         Refresh();
     }
 

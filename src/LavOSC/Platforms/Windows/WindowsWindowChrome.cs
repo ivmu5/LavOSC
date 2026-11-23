@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -44,7 +45,11 @@ internal sealed class WindowsWindowChrome
     private readonly OscReceiverPage page;
     private readonly Grid caption;
     private readonly Grid dragRegion;
+    private readonly StackPanel captionContent;
+    private readonly StackPanel navigation;
     private readonly Border toolbar;
+    private readonly InputNonClientPointerSource pointerSource;
+    private readonly Dictionary<WorkspaceSection, Button> tabs = [];
     private readonly Button minimize;
     private readonly Button maximize;
     private readonly Button fullscreen;
@@ -59,6 +64,8 @@ internal sealed class WindowsWindowChrome
     private long animationStarted;
     private double animationFrom;
     private XamlRoot? xamlRoot;
+    private bool updatingInteractiveRegions;
+    private bool closed;
     private bool IsFullscreen => appWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen;
 
     public static void Prepare(NativeWindow window)
@@ -68,7 +75,7 @@ internal sealed class WindowsWindowChrome
 
         window.ExtendsContentIntoTitleBar = true;
         var titleBar = window.AppWindow.TitleBar;
-        titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+        titleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
         titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         titleBar.ButtonForegroundColor = ToNativeColor(PulseVisuals.Text);
@@ -98,6 +105,7 @@ internal sealed class WindowsWindowChrome
         this.page = page;
         appWindow = window.AppWindow;
         titleBar = appWindow.TitleBar;
+        pointerSource = InputNonClientPointerSource.GetForWindowId(appWindow.Id);
         root.RequestedTheme = ElementTheme.Dark;
         root.Background ??= Brush(PulseVisuals.Background);
 
@@ -131,16 +139,45 @@ internal sealed class WindowsWindowChrome
         {
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent)
         };
-        dragRegion.Children.Add(CreateBrand());
+        navigation = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center
+        };
+        foreach (var (section, title) in OscReceiverPage.WorkspaceTabs)
+        {
+            var tab = new Button
+            {
+                Content = title, Height = 32, Padding = new Thickness(10, 0, 10, 0),
+                BorderThickness = new Thickness(1), BorderBrush = Brush(PulseVisuals.Background, 0)
+            };
+            AutomationProperties.SetName(tab, title);
+            tab.Click += (_, _) => page.Navigate(section);
+            navigation.Children.Add(tab);
+            tabs.Add(section, tab);
+        }
+        captionContent = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 20, Margin = new Thickness(14, 0, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center
+        };
+        captionContent.Children.Add(CreateBrand());
+        captionContent.Children.Add(navigation);
+        dragRegion.Children.Add(captionContent);
         caption = new Grid
         {
             Height = CaptionHeight, VerticalAlignment = VerticalAlignment.Top,
-            Background = Brush(PulseVisuals.Background, 160), RenderTransform = translation
+            Background = Brush(PulseVisuals.Background, 0), RenderTransform = translation
         };
         caption.Children.Add(dragRegion);
         caption.Children.Add(toolbar);
         Canvas.SetZIndex(caption, 1000);
         dragRegion.Loaded += OnDragRegionLoaded;
+        dragRegion.SizeChanged += OnInteractiveSizeChanged;
+        captionContent.SizeChanged += OnInteractiveSizeChanged;
+        toolbar.SizeChanged += OnInteractiveSizeChanged;
+        page.SectionChanged += UpdateSelectedTab;
+        UpdateSelectedTab(page.CurrentSection);
+        page.UseNativeCaption();
         root.Children.Add(caption);
 
         fullscreenKey = new KeyboardAccelerator { Key = VirtualKey.F11 };
@@ -171,7 +208,7 @@ internal sealed class WindowsWindowChrome
         var brand = new StackPanel
         {
             Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(14, 0, 0, 0)
+            VerticalAlignment = VerticalAlignment.Center
         };
         string path = Path.Combine(AppContext.BaseDirectory, "Resources", "AppIcon", "lavosc.png");
         if (File.Exists(path))
@@ -313,6 +350,17 @@ internal sealed class WindowsWindowChrome
 
     private void OnXamlRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => UpdateCaptionLayout();
 
+    private void UpdateSelectedTab(WorkspaceSection section)
+    {
+        foreach (var (id, button) in tabs)
+        {
+            bool selected = id == section;
+            button.Background = selected ? Brush(PulseVisuals.Selected) : Brush(PulseVisuals.Background, 0);
+            button.Foreground = Brush(selected ? PulseVisuals.Accent : PulseVisuals.Muted);
+            button.BorderBrush = selected ? Brush(PulseVisuals.Accent, 80) : Brush(PulseVisuals.Background, 0);
+        }
+    }
+
     private void UpdateCaptionLayout()
     {
         bool isFullscreen = IsFullscreen;
@@ -328,12 +376,52 @@ internal sealed class WindowsWindowChrome
         // Keep the only in-window button clear of the system caption hit targets.
         double toolbarSpace = showToolbar ? ButtonWidth + 2 * ToolbarPadding + 2 * ToolbarMargin : 0;
         dragRegion.Margin = new Thickness(left, 0, right + toolbarSpace, 0);
+        caption.Background = Brush(PulseVisuals.Background, isFullscreen ? (byte)235 : (byte)0);
         caption.Height = isFullscreen ? CaptionHeight : Math.Max(CaptionHeight, titleBar.Height / scale);
         page.SetCaptionInset(isFullscreen ? 0 : caption.Height);
+        QueueInteractiveRegions();
+    }
+
+    private void OnInteractiveSizeChanged(object sender, SizeChangedEventArgs args) => QueueInteractiveRegions();
+
+    private void QueueInteractiveRegions()
+    {
+        if (updatingInteractiveRegions || closed)
+            return;
+
+        updatingInteractiveRegions = caption.DispatcherQueue.TryEnqueue(() =>
+        {
+            updatingInteractiveRegions = false;
+            if (closed || !dragRegion.IsLoaded || xamlRoot is null)
+                return;
+            if (IsFullscreen)
+            {
+                pointerSource.ClearRegionRects(NonClientRegionKind.Passthrough);
+                return;
+            }
+
+            var regions = new List<RectInt32>(2);
+            AddRegion(navigation, regions, xamlRoot.RasterizationScale);
+            AddRegion(toolbar, regions, xamlRoot.RasterizationScale);
+            pointerSource.SetRegionRects(NonClientRegionKind.Passthrough, regions.ToArray());
+        });
+    }
+
+    private void AddRegion(FrameworkElement element, List<RectInt32> regions, double scale)
+    {
+        if (element.Visibility != Visibility.Visible || element.ActualWidth <= 0 || element.ActualHeight <= 0)
+            return;
+        var bounds = element.TransformToVisual(root).TransformBounds(
+            new Windows.Foundation.Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        int x = (int)Math.Floor(bounds.X * scale);
+        int y = (int)Math.Floor(bounds.Y * scale);
+        regions.Add(new RectInt32(x, y, (int)Math.Ceiling(bounds.Right * scale) - x,
+            (int)Math.Ceiling(bounds.Bottom * scale) - y));
     }
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        closed = true;
         CompositionTarget.Rendering -= OnAnimationFrame;
         root.KeyboardAccelerators.Remove(fullscreenKey);
         root.KeyboardAccelerators.Remove(escapeKey);
@@ -345,6 +433,10 @@ internal sealed class WindowsWindowChrome
         if (xamlRoot is not null)
             xamlRoot.Changed -= OnXamlRootChanged;
         dragRegion.Loaded -= OnDragRegionLoaded;
+        dragRegion.SizeChanged -= OnInteractiveSizeChanged;
+        captionContent.SizeChanged -= OnInteractiveSizeChanged;
+        toolbar.SizeChanged -= OnInteractiveSizeChanged;
+        page.SectionChanged -= UpdateSelectedTab;
     }
 
     private static Button CreateButton(string glyph, string description, Action action)
