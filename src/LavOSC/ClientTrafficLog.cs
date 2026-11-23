@@ -1,14 +1,13 @@
 using System.Collections.Concurrent;
 using System.Globalization;
-using System.Net;
 using Laveyana.LavOSC.Core;
 
 namespace Laveyana.LavOSC;
 
-internal sealed record ClientTrafficEntry(DateTimeOffset At, bool Sent, int RemotePort, int? LocalPort,
+internal sealed record ClientTrafficEntry(DateTimeOffset At, int RemotePort, int LocalPort,
     string Address, string Arguments);
 
-internal sealed record ClientTrafficSnapshot(long Received, long Sent, ClientTrafficEntry[] Recent);
+internal sealed record ClientTrafficSnapshot(long Received, ClientTrafficEntry[] Recent);
 
 internal sealed class ClientTrafficLog
 {
@@ -16,40 +15,32 @@ internal sealed class ClientTrafficLog
     private readonly ConcurrentDictionary<string, ClientHistory> clients = new(StringComparer.Ordinal);
 
     public void Received(OscEnvelope envelope, int port) => Record(envelope.Sender.IpAddress, envelope.Sender.Port,
-        port, false, envelope.Message.Address, envelope.Message.Arguments);
-
-    public void Sent(IPEndPoint endpoint, int? port, string address, IReadOnlyList<object?> arguments) =>
-        Record(endpoint.Address.ToString(), endpoint.Port, port, true, address, arguments);
+        port, envelope.Message.Address, envelope.Message.Arguments);
 
     public ClientTrafficSnapshot Snapshot(string ip)
     {
         if (!clients.TryGetValue(ip, out var client))
-            return new(0, 0, []);
+            return new(0, []);
 
         long received;
-        long sent;
         RawTraffic[] recent;
         lock (client)
         {
             received = client.Received;
-            sent = client.Sent;
             recent = client.Recent.ToArray();
         }
 
-        return new(received, sent, recent.Select(entry => new ClientTrafficEntry(entry.At.ToLocalTime(), entry.Sent,
+        return new(received, recent.Select(entry => new ClientTrafficEntry(entry.At.ToLocalTime(),
             entry.RemotePort, entry.LocalPort, entry.Address, FormatArguments(entry.Arguments))).ToArray());
     }
 
-    private void Record(string ip, int remotePort, int? localPort, bool sent, string address, IReadOnlyList<object?> arguments)
+    private void Record(string ip, int remotePort, int localPort, string address, IReadOnlyList<object?> arguments)
     {
         var client = clients.GetOrAdd(ip, static _ => new ClientHistory());
-        var entry = new RawTraffic(DateTimeOffset.UtcNow, sent, remotePort, localPort, Limit(address), RetainArguments(arguments));
+        var entry = new RawTraffic(DateTimeOffset.UtcNow, remotePort, localPort, Limit(address), RetainArguments(arguments));
         lock (client)
         {
-            if (sent)
-                client.Sent++;
-            else
-                client.Received++;
+            client.Received++;
             if (client.Recent.Count == HistoryLimit)
                 client.Recent.Dequeue();
             client.Recent.Enqueue(entry);
@@ -96,10 +87,9 @@ internal sealed class ClientTrafficLog
     private sealed class ClientHistory
     {
         public long Received;
-        public long Sent;
         public Queue<RawTraffic> Recent { get; } = new(HistoryLimit);
     }
 
-    private readonly record struct RawTraffic(DateTimeOffset At, bool Sent, int RemotePort, int? LocalPort,
+    private readonly record struct RawTraffic(DateTimeOffset At, int RemotePort, int LocalPort,
         string Address, IReadOnlyList<object?> Arguments);
 }

@@ -11,7 +11,7 @@ public interface IPedalOutput : IDisposable
 public sealed record PedalSnapshot(double Throttle, double Brake, bool ThrottleFresh, bool BrakeFresh,
     bool OutputActive, string? Sender, string? Notice);
 
-public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
+public sealed class PedalSession : IOscModule, IDisposable
 {
     private const string ModuleName = "pedals";
     private const string ThrottleCommand = "throttle";
@@ -21,7 +21,6 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan TickPeriod = TimeSpan.FromMilliseconds(16);
     private const double SmoothingMilliseconds = 15;
-    private static readonly IReadOnlyList<object?> Neutral = Array.AsReadOnly<object?>([0f]);
     private readonly object gate = new();
     private readonly Timer timer;
     private readonly Channel throttle = new();
@@ -42,11 +41,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             "Тормоз · один аргумент float32 или float64 в диапазоне 0–1.", $"/{ModuleName}/{BrakeCommand} 0.25",
             $"Без heartbeat требуется повторять значение чаще одного раза в {Timeout.TotalMilliseconds:0} мс."),
         new($"/{ModuleName}/{HeartbeatCommand}", OscEndpointDirection.Receive, "Без аргументов.",
-            $"/{ModuleName}/{HeartbeatCommand}", "Периодически подтверждает связь. Между подтверждениями можно отправлять только изменившиеся значения."),
-        new($"/{ModuleName}/{ThrottleCommand}", OscEndpointDirection.Send,
-            "Текущее значение газа · один аргумент float32 в диапазоне 0–1."),
-        new($"/{ModuleName}/{BrakeCommand}", OscEndpointDirection.Send,
-            "Текущее значение тормоза · один аргумент float32 в диапазоне 0–1.")
+            $"/{ModuleName}/{HeartbeatCommand}", "Периодически подтверждает связь. Между подтверждениями можно отправлять только изменившиеся значения.")
     ]);
 
     public string Name => ModuleName;
@@ -72,16 +67,6 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
                 : null);
             return new(throttleFresh ? throttle.Position : 0, brakeFresh ? brake.Position : 0,
                 throttleFresh, brakeFresh, output is not null, sender, status);
-        }
-    }
-
-    public IReadOnlyList<OscFeedback> GetFeedback()
-    {
-        lock (gate)
-        {
-            long now = Stopwatch.GetTimestamp();
-            return [throttle.Feedback(ThrottleCommand, sender, IsFresh(throttle, now)),
-                brake.Feedback(BrakeCommand, sender, IsFresh(brake, now))];
         }
     }
 
@@ -236,7 +221,7 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
             try
             {
                 if (changed && !output.TryWrite(throttle.Position, brake.Position))
-                    StopOutput("vJoy отклонил команду. Требуется повторное включение педалей.");
+                    StopOutput("vJoy отклонил команду. Перезапустите модуль «Педали».");
             }
             catch (Exception exception)
             {
@@ -279,7 +264,6 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
     {
         private long? timestamp;
         private double target;
-        private bool targetFromClient;
 
         public double Position { get; private set; }
         public bool HasValue { get; private set; }
@@ -287,31 +271,16 @@ public sealed class PedalSession : IOscModule, IOscFeedbackSource, IDisposable
         public bool IsFresh(long now) => timestamp is { } received &&
             Stopwatch.GetElapsedTime(received, now) < Timeout;
 
-        public OscFeedback Feedback(string name, string? sender, bool fresh) => new(name, [fresh ? (float)Position : 0f])
-        {
-            UseCommandAddress = true,
-            InitialArguments = Neutral,
-            Origin = sender is not null && timestamp is long received
-                ? new(sender, received, [(float)target], SuppressEcho: fresh && targetFromClient)
-                : null
-        };
-
         public void SetTarget(double value, long received)
         {
             target = value;
             timestamp = received;
-            targetFromClient = true;
             HasValue = true;
         }
 
         public void Invalidate() => HasValue = false;
 
-        public void ResetPosition()
-        {
-            if (Position != 0)
-                targetFromClient = false;
-            Position = 0;
-        }
+        public void ResetPosition() => Position = 0;
 
         public bool Advance(bool fresh, double ratio)
         {

@@ -29,7 +29,6 @@ internal sealed partial class OscReceiverPage : ContentPage
     private readonly Entry dllPath = MakeEntry(Keyboard.Plain);
     private readonly Button listen = MakeButton("Начать приём");
     private readonly Button calibrate = MakeButton("Выставить центр");
-    private readonly Button drive = MakeButton("Включить руль", primary: true);
     private readonly Button prepare = MakeButton("Подготовить vJoy");
     private readonly Label networkStatus = Caption();
     private readonly Label routingStatus = Caption();
@@ -52,7 +51,7 @@ internal sealed partial class OscReceiverPage : ContentPage
     private readonly IDispatcherTimer timer;
     private readonly Stopwatch rateClock = Stopwatch.StartNew();
     private readonly CancellationTokenSource lifetime = new();
-    private readonly OscRouter router = new();
+    private readonly OscRouter router;
     private OscUdpReceiver? receiver;
     private IDisposable? wheelRegistration;
     private WheelSession? session;
@@ -68,11 +67,12 @@ internal sealed partial class OscReceiverPage : ContentPage
     private bool working;
     private bool initialized;
     private bool closed;
-    private bool armAfterCalibration;
+    private VJoyAxes pendingOutputs;
 
     public OscReceiverPage(IReadOnlyList<IOscModule> modules)
     {
         BackgroundColor = Canvas;
+        router = new(clientAccess.Accept);
         var preferences = Preferences.Default;
         port.Text = preferences.Get("OscPort", 8000).ToString(CultureInfo.InvariantCulture);
         device.Items.Add("Автоматически");
@@ -101,24 +101,11 @@ internal sealed partial class OscReceiverPage : ContentPage
             session?.Calibrate();
             Refresh();
         };
-        drive.Clicked += async (_, _) =>
-        {
-            armAfterCalibration = false;
-            if (session?.Snapshot().OutputActive == true)
-                session.DisableOutput();
-            else
-                await PrepareVJoyAsync(arm: true);
-            Refresh();
-        };
-        prepare.Clicked += async (_, _) => await PrepareVJoyAsync(arm: false,
-            (wheelModule.IsEnabled ? VJoyAxes.X : VJoyAxes.None) |
-            (pedalsModule.IsEnabled ? VJoyAxes.Pedals : VJoyAxes.None));
+        prepare.Clicked += async (_, _) => await PrepareVJoyAsync(arm: false, GetInactiveOutputAxes());
         invert.Toggled += (_, _) => SaveSteeringSettings();
         autoSetup.Toggled += (_, args) =>
         {
             preferences.Set("VJoyAutoSetup", args.Value);
-            if (!args.Value)
-                armAfterCalibration = false;
         };
         device.SelectedIndexChanged += (_, _) =>
         {
@@ -131,7 +118,6 @@ internal sealed partial class OscReceiverPage : ContentPage
             ClearPreparedDevice();
         };
 
-        ConfigurePedalControls();
         Content = workspace = MakeWorkspace();
 
         ShowAddresses();
@@ -140,28 +126,19 @@ internal sealed partial class OscReceiverPage : ContentPage
         timer.Interval = TimeSpan.FromMilliseconds(50);
         timer.Tick += async (_, _) =>
         {
+            ResetBlockedSources();
             Refresh();
-            if (armAfterCalibration && !working && !closed &&
-                session?.Snapshot() is { Fresh: true, Calibrated: true, OutputActive: false })
-            {
-                armAfterCalibration = false;
-                await PrepareVJoyAsync(arm: true);
-            }
+            await ConnectReadyOutputAsync();
         };
         timer.Start();
         StartClientMonitoring();
-        Loaded += async (_, _) =>
+        Loaded += (_, _) =>
         {
             if (initialized || closed)
                 return;
 
             initialized = true;
             ToggleListening();
-            if (wheelModule.IsEnabled && autoSetup.IsToggled)
-            {
-                armAfterCalibration = true;
-                await PrepareVJoyAsync(arm: false);
-            }
         };
     }
 
@@ -173,7 +150,6 @@ internal sealed partial class OscReceiverPage : ContentPage
         closed = true;
         timer.Stop();
         clientTimer.Stop();
-        feedbackDelivery?.Dispose();
         lifetime.Cancel();
         if (!working)
             lifetime.Dispose();
@@ -212,7 +188,6 @@ internal sealed partial class OscReceiverPage : ContentPage
             }
         }
 
-        ConfigureFeedback();
         Refresh();
     }
 
@@ -223,6 +198,8 @@ internal sealed partial class OscReceiverPage : ContentPage
         {
             wheelRegistration = router.Register(next, WheelAlias);
             session = next;
+            wheelModule.SetError(null);
+            pendingOutputs |= VJoyAxes.X;
         }
         catch
         {
@@ -233,9 +210,9 @@ internal sealed partial class OscReceiverPage : ContentPage
 
     private void StopListening()
     {
-        DiscoverClients();
         receiver?.Dispose();
         receiver = null;
+        SyncClients();
         AdvertiseHost(null);
         DetachWheel();
         DetachPedals();
@@ -247,6 +224,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         wheelRegistration = null;
         session?.Dispose();
         session = null;
+        pendingOutputs &= ~VJoyAxes.X;
         wheelDeviceId = null;
         previousCount = 0;
         frequency = 0;
@@ -320,12 +298,10 @@ internal sealed partial class OscReceiverPage : ContentPage
         port.IsEnabled = input?.Listening != true;
         device.IsEnabled = !active && !pedalsActive && !working;
         dllPath.IsEnabled = device.IsEnabled;
-        prepare.IsEnabled = device.IsEnabled && (wheelModule.IsEnabled || pedalsModule.IsEnabled);
+        prepare.IsEnabled = !working && GetInactiveOutputAxes(active, pedalsActive) != VJoyAxes.None;
         listen.Text = input?.Listening == true ? "Остановить приём" : "Начать приём";
         settingsListen.Text = listen.Text;
         calibrate.IsEnabled = receiving;
-        drive.IsEnabled = active || receiving && calibrated && !working;
-        drive.Text = active ? "Выключить руль" : "Включить руль";
         RefreshPedals(pedalSnapshot);
     }
 

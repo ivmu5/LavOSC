@@ -63,6 +63,7 @@ public sealed record OscRoutingSnapshot(long DroppedDeliveries, long HandlerErro
 public sealed class OscRouter
 {
     private readonly object gate = new();
+    private readonly Func<OscSender, bool>? allowSender;
     private readonly ConditionalWeakTable<IOscModule, object> deliveryGates = new();
     private readonly Dictionary<string, Route> modules = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<Subscription>> subscriptions = new(StringComparer.Ordinal);
@@ -71,6 +72,15 @@ public sealed class OscRouter
     private long peakQueueTicks;
     private long handlerErrors;
     private string? lastHandlerError;
+
+    public OscRouter() { }
+
+    /// <summary>Checks whether an OSC sender may reach modules, including for already queued input.</summary>
+    public OscRouter(Func<OscSender, bool> allowSender)
+    {
+        ArgumentNullException.ThrowIfNull(allowSender);
+        this.allowSender = allowSender;
+    }
 
     public IDisposable Register(IOscModule module, params string[] aliases)
     {
@@ -116,6 +126,9 @@ public sealed class OscRouter
 
     internal void Dispatch(OscEnvelope envelope)
     {
+        if (!CanDispatch(envelope.Sender))
+            return;
+
         string address = envelope.Message.Address;
         lock (gate)
         {
@@ -148,6 +161,20 @@ public sealed class OscRouter
 
             var command = new OscCommand(route.Name, commandName, parts, envelope);
             route.Enqueue(new(envelope, null, handler.Invoke, command, handler.Latest));
+        }
+    }
+
+    private bool CanDispatch(OscSender sender)
+    {
+        try
+        {
+            return allowSender?.Invoke(sender) != false;
+        }
+        catch (Exception error)
+        {
+            Volatile.Write(ref lastHandlerError, $"{sender.IpAddress}: {error.Message}");
+            Interlocked.Increment(ref handlerErrors);
+            return false;
         }
     }
 
@@ -278,6 +305,8 @@ public sealed class OscRouter
                         if (Volatile.Read(ref disposed) != 0)
                             return;
 
+                        if (!router.CanDispatch(delivery.Envelope.Sender))
+                            continue;
                         router.TrackQueueDelay(delivery.Envelope.ReceivedTimestamp);
                         try
                         {

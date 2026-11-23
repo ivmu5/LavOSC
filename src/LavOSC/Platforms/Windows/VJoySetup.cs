@@ -6,7 +6,7 @@ using Microsoft.Win32;
 namespace Laveyana.LavOSC;
 
 internal sealed record VJoySetupOptions(string? DllOverride, int RequestedId, int PreferredId,
-    VJoyAxes RequiredAxes, bool AllowDeviceCreation);
+    VJoyAxes RequiredAxes, bool AllowDeviceCreation, bool AllowDriverRecovery = true);
 internal sealed record VJoyPreparation(VJoyScan Scan, int Id, bool Created);
 internal sealed record VJoyProgress(string Message, VJoyScan? Scan = null);
 
@@ -25,6 +25,8 @@ internal static class VJoySetup
         {
             progress.Report(new("Проверка состояния vJoy в Windows…", scan));
             var devices = VJoyWindowsDevices.Read();
+            if (!options.AllowDriverRecovery)
+                throw new InvalidOperationException(DescribeUnavailableDriver(devices));
             var disabled = devices.Where(device => device.Disabled).ToArray();
             if (disabled.Length != 1 || devices.Any(device => device.Started))
                 throw new InvalidOperationException(DescribeUnavailableDriver(devices));
@@ -49,8 +51,7 @@ internal static class VJoySetup
             return new(scan, available.Id, false);
 
         if (!options.AllowDeviceCreation)
-            throw new InvalidOperationException($"Оси {requiredAxes} недоступны. Отключите передачу в vJoy " +
-                "перед созданием устройства или выберите устройство с нужными осями.");
+            throw new InvalidOperationException($"Оси {requiredAxes} недоступны. Подготовьте устройство с нужными осями в настройках vJoy.");
 
         var empty = scan.Devices.FirstOrDefault(device => device.State == VJoyDeviceState.Missing &&
             (options.RequestedId == 0 || device.Id == options.RequestedId));
