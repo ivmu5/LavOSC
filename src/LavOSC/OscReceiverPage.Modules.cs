@@ -1,5 +1,6 @@
 using Laveyana.LavOSC.Core;
 using Laveyana.LavOSC.Modules.Pedals;
+using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Storage;
 
@@ -8,26 +9,42 @@ namespace Laveyana.LavOSC;
 internal sealed partial class OscReceiverPage
 {
     private const string WheelAlias = "whell";
-    private readonly ProgressBar throttleBar = new() { ProgressColor = Accent };
-    private readonly ProgressBar brakeBar = new() { ProgressColor = Warning };
-    private readonly Label throttleValue = Caption();
-    private readonly Label brakeValue = Caption();
+    private readonly ProgressBar throttleBar = new() { ProgressColor = Accent, HeightRequest = 10 };
+    private readonly ProgressBar brakeBar = new() { ProgressColor = Warning, HeightRequest = 10 };
+    private readonly Label throttleValue = MetricValue(20);
+    private readonly Label brakeValue = MetricValue(20);
     private readonly Label pedalStatus = Caption();
     private IDisposable? pedalRegistration;
     private PedalSession? pedals;
 
     private View MakePedalBody() => new VerticalStackLayout
     {
-        Spacing = 7,
+        Spacing = 10,
         Children =
         {
-            Row(Caption("Газ · Y"), throttleValue),
-            throttleBar,
-            Row(Caption("Тормоз · Z"), brakeValue),
-            brakeBar,
+            PedalMeter("Газ", "Ось Y", throttleBar, throttleValue),
+            PedalMeter("Тормоз", "Ось Z", brakeBar, brakeValue),
             pedalStatus
         }
     };
+
+    private static View PedalMeter(string name, string axis, ProgressBar bar, Label value)
+    {
+        var label = new HorizontalStackLayout
+        {
+            Spacing = 8,
+            Children = { Heading(name, 14), Caption(axis) }
+        };
+        SemanticProperties.SetDescription(bar, name);
+        return new Border
+        {
+            BackgroundColor = PulseVisuals.Recessed,
+            StrokeThickness = 0,
+            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 8 },
+            Padding = new Thickness(10, 6),
+            Content = new VerticalStackLayout { Spacing = 2, Children = { Row(label, value), bar } }
+        };
+    }
 
     private void RefreshPedals(PedalSnapshot? snapshot)
     {

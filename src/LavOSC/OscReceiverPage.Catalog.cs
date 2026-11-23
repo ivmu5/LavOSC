@@ -15,7 +15,11 @@ internal sealed partial class OscReceiverPage
     private readonly VerticalStackLayout moduleDetails = new() { Spacing = 12 };
     private readonly ScrollView moduleDetailsScroll = new();
     private readonly ScrollView oscReferenceScroll = new();
-    private readonly SearchBar moduleSearch = new() { Placeholder = "Название или OSC-адрес", TextColor = Text, PlaceholderColor = Muted };
+    private readonly SearchBar moduleSearch = new()
+    {
+        Placeholder = "Название или OSC-адрес", TextColor = Text, PlaceholderColor = Muted,
+        FontFamily = PulseVisuals.Font, FontSize = 13
+    };
     private readonly Switch pinnedOnly = new() { OnColor = Accent };
     private readonly CollectionView moduleList = new() { SelectionMode = SelectionMode.Single };
     private ModuleEntry wheelModule = null!;
@@ -54,42 +58,66 @@ internal sealed partial class OscReceiverPage
 
         var listColumn = new Grid
         {
-            RowSpacing = 12,
+            RowSpacing = 9,
             RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
         };
         listColumn.Add(new VerticalStackLayout
         {
-            Spacing = 8,
-            Children = { Heading("Модули", 27), moduleSearch, Row(Caption("Только на главной"), pinnedOnly) }
+            Spacing = 7,
+            Children = { moduleSearch, Row(Caption("Только закреплённые"), pinnedOnly) }
         });
         listColumn.Add(moduleList, 0, 1);
-        var listWidth = new ColumnDefinition(new GridLength(285));
-        var referenceWidth = new ColumnDefinition(new GridLength(320));
+        var listWidth = new ColumnDefinition(264);
+        var referenceWidth = new ColumnDefinition(314);
+        var lowerRow = new RowDefinition(0);
+        var panes = new Grid
+        {
+            ColumnSpacing = 14,
+            ColumnDefinitions = { listWidth, new ColumnDefinition(GridLength.Star), referenceWidth },
+            RowDefinitions = { new RowDefinition(GridLength.Star), lowerRow }
+        };
+        var listPanel = Card(listColumn);
+        listPanel.BackgroundColor = PulseVisuals.Surface;
+        listPanel.Padding = new Thickness(10);
+        panes.Add(listPanel);
+        panes.Add(moduleDetailsScroll, 1);
+        panes.Add(oscReferenceScroll, 2);
+        bool wide = true;
+        panes.SizeChanged += (_, _) =>
+        {
+            if (panes.Width <= 0)
+                return;
+            bool next = panes.Width >= 850;
+            listWidth.Width = next ? Math.Clamp(Math.Floor(panes.Width * .27), 238, 290) : 236;
+            referenceWidth.Width = next ? Math.Clamp(Math.Floor(panes.Width * .32), 270, 338) : 0;
+            if (wide == next)
+                return;
+            wide = next;
+            panes.ColumnSpacing = 14;
+            panes.RowSpacing = next ? 0 : 12;
+            lowerRow.Height = next ? new GridLength(0) : GridLength.Star;
+            Grid.SetRowSpan(listPanel, next ? 1 : 2);
+            Grid.SetColumn(oscReferenceScroll, next ? 2 : 1);
+            Grid.SetRow(oscReferenceScroll, next ? 0 : 1);
+        };
+        moduleDetailsScroll.Content = moduleDetails;
         var view = new Grid
         {
-            ColumnSpacing = 12,
-            ColumnDefinitions = { listWidth, new ColumnDefinition(GridLength.Star), referenceWidth }
+            RowSpacing = 16,
+            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
         };
-        view.SizeChanged += (_, _) =>
-        {
-            if (view.Width <= 0)
-                return;
-            listWidth.Width = Math.Min(300, Math.Floor(view.Width * .31));
-            referenceWidth.Width = Math.Min(340, Math.Floor(view.Width * .36));
-        };
-        view.Add(listColumn);
-        moduleDetailsScroll.Content = moduleDetails;
-        view.Add(moduleDetailsScroll, 1);
-        view.Add(oscReferenceScroll, 2);
+        view.Add(PageHeading("Модули"));
+        view.Add(panes, 0, 1);
         return view;
     }
 
     private View MakeCatalogRow()
     {
-        var title = Heading("", 16);
+        var title = Heading("", 15);
         title.LineBreakMode = LineBreakMode.TailTruncation;
         title.SetBinding(Label.TextProperty, nameof(ModuleEntry.Title));
         var address = Caption();
+        address.FontFamily = "Consolas";
         address.LineBreakMode = LineBreakMode.TailTruncation;
         address.SetBinding(Label.TextProperty, nameof(ModuleEntry.Address));
         var state = new Switch { OnColor = Accent, VerticalOptions = LayoutOptions.Center };
@@ -108,11 +136,21 @@ internal sealed partial class OscReceiverPage
         var pinned = MakeButton("");
         pinned.FontSize = 17;
         pinned.WidthRequest = 32;
+        pinned.MinimumHeightRequest = 32;
         pinned.Padding = 0;
         pinned.SetBinding(IsEnabledProperty, nameof(ModuleEntry.Available));
         pinned.SetBinding(Button.TextProperty, nameof(ModuleEntry.PinGlyph));
         pinned.SetBinding(ToolTipProperties.TextProperty, nameof(ModuleEntry.PinAction));
         pinned.SetBinding(SemanticProperties.DescriptionProperty, nameof(ModuleEntry.PinAction));
+        pinned.Triggers.Add(new DataTrigger(typeof(Button))
+        {
+            Binding = new Binding(nameof(ModuleEntry.IsPinned)), Value = true,
+            Setters =
+            {
+                new Setter { Property = Button.TextColorProperty, Value = Accent },
+                new Setter { Property = BackgroundColorProperty, Value = PulseVisuals.Selected }
+            }
+        });
         pinned.Clicked += (_, _) =>
         {
             if (pinned.BindingContext is ModuleEntry entry && entry.Available)
@@ -127,9 +165,9 @@ internal sealed partial class OscReceiverPage
             new HorizontalStackLayout { Spacing = 4, VerticalOptions = LayoutOptions.Center, Children = { state, pinned } });
         row.ColumnSpacing = 6;
         row.BackgroundColor = Panel;
-        row.Margin = new Thickness(0, 0, 0, 2);
-        row.Padding = new Thickness(12, 8);
-        row.HeightRequest = 64;
+        row.Margin = new Thickness(0, 0, 0, 4);
+        row.Padding = new Thickness(8, 6);
+        row.HeightRequest = 60;
         ApplyListItemStates(row);
         return row;
     }
@@ -143,6 +181,11 @@ internal sealed partial class OscReceiverPage
                 States =
                 {
                     new VisualState { Name = "Normal" },
+                    new VisualState
+                    {
+                        Name = "PointerOver",
+                        Setters = { new Setter { Property = BackgroundColorProperty, Value = PulseVisuals.Button } }
+                    },
                     new VisualState
                     {
                         Name = "Selected",
@@ -162,12 +205,12 @@ internal sealed partial class OscReceiverPage
         try
         {
             string query = moduleSearch.Text?.Trim() ?? "";
-            if (target is not null && !target.Matches(query, false))
+            if (target is not null && !MatchesModule(target, query, false))
                 moduleSearch.Text = query = "";
             if (target is { IsPinned: false })
                 pinnedOnly.IsToggled = false;
 
-            var filtered = moduleEntries.Where(module => module.Matches(query, pinnedOnly.IsToggled)).ToArray();
+            var filtered = moduleEntries.Where(module => MatchesModule(module, query, pinnedOnly.IsToggled)).ToArray();
             moduleList.ItemsSource = filtered;
             moduleList.SelectedItem = selected is not null && filtered.Contains(selected) ? selected : filtered.FirstOrDefault();
         }
@@ -179,6 +222,30 @@ internal sealed partial class OscReceiverPage
         if (target is not null && ReferenceEquals(moduleList.SelectedItem, target))
             moduleList.ScrollTo(target, position: ScrollToPosition.MakeVisible, animate: false);
     }
+
+    private bool MatchesModule(ModuleEntry entry, string query, bool onlyPinned)
+    {
+        if (entry.Matches(query, onlyPinned))
+            return true;
+        if (onlyPinned && !entry.IsPinned)
+            return false;
+
+        try
+        {
+            return GetModuleInputs(entry).Any(endpoint => endpoint.Address.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                (entry == wheelModule && "/whell/calibrate".Contains(query, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private IEnumerable<OscEndpoint> GetModuleInputs(ModuleEntry entry) =>
+        (entry == wheelModule ? WheelSession.OscEndpoints
+            : entry == pedalsModule ? PedalSession.OscEndpoints
+            : (entry.Extension as IOscEndpointDocumentation)?.Endpoints ?? [])
+        .Where(endpoint => endpoint.Direction == OscEndpointDirection.Receive);
 
     private void ShowModuleDetails()
     {
@@ -209,13 +276,11 @@ internal sealed partial class OscReceiverPage
 
     private View MakeOscReference(ModuleEntry entry)
     {
-        var reference = new VerticalStackLayout { Spacing = 10, Children = { Heading("OSC-адреса", 16) } };
-        IReadOnlyList<OscEndpoint> endpoints;
+        var reference = new VerticalStackLayout { Spacing = 12, Children = { Heading("OSC-адреса", 19) } };
+        OscEndpoint[] inputs;
         try
         {
-            endpoints = entry == wheelModule ? WheelSession.OscEndpoints
-                : entry == pedalsModule ? PedalSession.OscEndpoints
-                : (entry.Extension as IOscEndpointDocumentation)?.Endpoints ?? [];
+            inputs = GetModuleInputs(entry).ToArray();
         }
         catch (Exception error)
         {
@@ -223,7 +288,6 @@ internal sealed partial class OscReceiverPage
             return Card(reference);
         }
 
-        var inputs = endpoints.Where(endpoint => endpoint.Direction == OscEndpointDirection.Receive).ToArray();
         if (inputs.Length == 0)
             reference.Children.Add(Caption("Модуль не предоставил описание OSC-адресов."));
 
@@ -245,7 +309,10 @@ internal sealed partial class OscReceiverPage
             }
             if (endpoint.Notes is { } notes)
                 details.Children.Add(Caption(notes));
-            reference.Children.Add(details);
+            var block = Card(details);
+            block.BackgroundColor = PulseVisuals.Recessed;
+            block.Padding = new Thickness(10);
+            reference.Children.Add(block);
         }
         return Card(reference);
     }
@@ -257,28 +324,38 @@ internal sealed partial class OscReceiverPage
         field.IsReadOnly = true;
         field.FontFamily = "Consolas";
         field.FontSize = 13;
+        field.BackgroundColor = PulseVisuals.Surface;
         SemanticProperties.SetDescription(field, "OSC-адрес");
 
-        var copy = MakeButton("Копировать");
+        var copy = MakeButton("⧉");
+        copy.FontFamily = "Segoe UI Symbol";
+        copy.FontSize = 16;
+        copy.WidthRequest = 36;
+        copy.Padding = 0;
+        ToolTipProperties.SetText(copy, "Копировать адрес");
         SemanticProperties.SetDescription(copy, $"Копировать OSC-адрес {address}");
         copy.Clicked += async (_, _) =>
         {
             try
             {
                 await Clipboard.Default.SetTextAsync(address);
-                copy.Text = "Скопировано";
+                copy.Text = "✓";
+                ToolTipProperties.SetText(copy, "Скопировано");
             }
             catch (Exception exception) when (exception is ExternalException or InvalidOperationException)
             {
-                copy.Text = "Ошибка копирования";
+                copy.Text = "!";
+                ToolTipProperties.SetText(copy, "Ошибка копирования");
             }
         };
-        return Row(field, copy);
+        var row = Row(field, copy);
+        row.ColumnSpacing = 6;
+        return row;
     }
 
     private static View MakeModuleSummary(ModuleEntry entry)
     {
-        var title = Heading(entry.Title, 18);
+        var title = Heading(entry.Title, 22);
         title.LineBreakMode = LineBreakMode.TailTruncation;
         var state = Caption();
         state.SetBinding(Label.TextProperty, nameof(ModuleEntry.State));
