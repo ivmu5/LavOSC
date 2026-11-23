@@ -30,7 +30,7 @@ internal sealed partial class OscReceiverPage
             Children =
             {
                 Row(angle, axisValue), gaugeView, sensorValues, sampleStatus, notice,
-                Row(calibrate, drive)
+                calibrate
             }
         };
         wheelSettings = Card(new VerticalStackLayout
@@ -97,6 +97,7 @@ internal sealed partial class OscReceiverPage
                 detailsSlot.Content = null;
             detailsSlot = null;
             moduleDetails.Children.Clear();
+            oscReferenceScroll.Content = null;
             activeSection = page;
             foreach (var (panel, button) in sections)
             {
@@ -194,7 +195,7 @@ internal sealed partial class OscReceiverPage
                 Spacing = 8,
                 Children =
                 {
-                    Heading("vJoy", 16), Row(Caption("Автоподготовка при запуске"), autoSetup),
+                    Heading("vJoy", 16), Row(Caption("Автоматически подготавливать vJoy"), autoSetup),
                     Field("Устройство vJoy", device), Field("Путь к vJoyInterface.dll", dllPath), prepare
                 }
             })
@@ -229,7 +230,10 @@ internal sealed partial class OscReceiverPage
         title.TextColor = Accent;
         title.BackgroundColor = Colors.Transparent;
         title.Padding = new Thickness(0, 4);
-        title.HorizontalOptions = LayoutOptions.Start;
+        title.HorizontalOptions = LayoutOptions.Fill;
+        title.MinimumWidthRequest = 0;
+        title.MinimumHeightRequest = 32;
+        title.HeightRequest = 32;
         title.LineBreakMode = LineBreakMode.TailTruncation;
         title.VerticalOptions = LayoutOptions.Center;
         title.Clicked += (_, _) => openCatalogModule(entry);
@@ -248,7 +252,7 @@ internal sealed partial class OscReceiverPage
                 new Setter { Property = BackgroundColorProperty, Value = PulseVisuals.Selected }
             }
         });
-        state.Clicked += async (_, _) => await ToggleModuleAsync(entry);
+        state.Clicked += (_, _) => ToggleModule(entry);
         ToolTipProperties.SetText(state, "Включить или отключить модуль");
         var unpin = MakeButton("−");
         unpin.FontSize = 18;

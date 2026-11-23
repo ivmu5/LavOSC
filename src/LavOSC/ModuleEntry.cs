@@ -4,8 +4,7 @@ using Laveyana.LavOSC.Core;
 namespace Laveyana.LavOSC;
 
 internal sealed class ModuleEntry(string name, string title, string enabledKey,
-    bool enabled = false, bool pinned = false, IOscModule? extension = null, string? validationError = null,
-    bool supportsFeedback = false)
+    bool enabled = false, bool pinned = false, IOscModule? extension = null, string? validationError = null)
     : INotifyPropertyChanged
 {
     public string Name { get; } = name;
@@ -13,17 +12,13 @@ internal sealed class ModuleEntry(string name, string title, string enabledKey,
     public string Address => $"/{Name}";
     public string EnabledKey { get; } = enabledKey;
     public string PinnedKey => $"OscModulePinned.{Name}";
-    public string FeedbackKey => $"OscModuleFeedback.{Name}";
     public IOscModule? Extension { get; } = extension;
     public IDisposable? Registration { get; set; }
     public bool Available { get; } = validationError is null;
-    public bool SupportsFeedback => supportsFeedback || Extension is IOscFeedbackSource;
     public bool IsEnabled { get; private set; } = enabled;
     public bool IsPinned { get; private set; } = pinned;
-    public bool FeedbackEnabled { get; private set; }
-    public string FeedbackAction => FeedbackEnabled ? "Отключить обратную связь" : "Включить обратную связь";
     public string PinAction => IsPinned ? "Убрать с главной" : "На главный экран";
-    public string EnableAction => IsEnabled ? "Отключить модуль" : "Включить модуль";
+    public string PinGlyph => IsPinned ? "★" : "☆";
     public string State => Error is not null ? "Ошибка" : IsEnabled ? "Включён" : "Выключен";
     public string? Error { get; private set; } = validationError;
     public bool HasError => Error is not null;
@@ -40,7 +35,7 @@ internal sealed class ModuleEntry(string name, string title, string enabledKey,
             return;
 
         IsEnabled = value;
-        Notify(nameof(IsEnabled), nameof(EnableAction), nameof(State));
+        Notify(nameof(IsEnabled), nameof(State));
     }
 
     public void SetPinned(bool value)
@@ -49,16 +44,7 @@ internal sealed class ModuleEntry(string name, string title, string enabledKey,
             return;
 
         IsPinned = value;
-        Notify(nameof(IsPinned), nameof(PinAction));
-    }
-
-    public void SetFeedback(bool value)
-    {
-        if (FeedbackEnabled == value)
-            return;
-
-        FeedbackEnabled = value;
-        Notify(nameof(FeedbackEnabled), nameof(FeedbackAction));
+        Notify(nameof(IsPinned), nameof(PinAction), nameof(PinGlyph));
     }
 
     public void SetError(string? value)

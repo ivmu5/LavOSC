@@ -8,7 +8,6 @@ namespace Laveyana.LavOSC;
 internal sealed partial class OscReceiverPage
 {
     private const string WheelAlias = "whell";
-    private readonly Button pedalDrive = MakeButton("Включить педали", primary: true);
     private readonly ProgressBar throttleBar = new() { ProgressColor = Accent };
     private readonly ProgressBar brakeBar = new() { ProgressColor = Warning };
     private readonly Label throttleValue = Caption();
@@ -16,18 +15,6 @@ internal sealed partial class OscReceiverPage
     private readonly Label pedalStatus = Caption();
     private IDisposable? pedalRegistration;
     private PedalSession? pedals;
-
-    private void ConfigurePedalControls()
-    {
-        pedalDrive.Clicked += async (_, _) =>
-        {
-            if (pedals?.Snapshot().OutputActive == true)
-                pedals.DisableOutput();
-            else
-                await PrepareVJoyAsync(arm: true, VJoyAxes.Pedals);
-            Refresh();
-        };
-    }
 
     private View MakePedalBody() => new VerticalStackLayout
     {
@@ -38,8 +25,7 @@ internal sealed partial class OscReceiverPage
             throttleBar,
             Row(Caption("Тормоз · Z"), brakeValue),
             brakeBar,
-            pedalStatus,
-            pedalDrive
+            pedalStatus
         }
     };
 
@@ -56,8 +42,6 @@ internal sealed partial class OscReceiverPage
             : $"vJoy №{pedalDeviceId} · ожидание данных педалей")
             : fresh ? $"Источник сигнала · {snapshot!.Sender}" : "Нет сигнала педалей");
         pedalStatus.TextColor = snapshot?.Notice is not null ? Warning : active ? Accent : Muted;
-        pedalDrive.IsEnabled = active || snapshot?.Sender is not null && !working;
-        pedalDrive.Text = active ? "Выключить педали" : "Включить педали";
     }
 
     private void AttachPedals()
@@ -67,6 +51,8 @@ internal sealed partial class OscReceiverPage
         {
             pedalRegistration = router.Register(next);
             pedals = next;
+            pedalsModule.SetError(null);
+            pendingOutputs |= VJoyAxes.Pedals;
         }
         catch
         {
@@ -81,15 +67,16 @@ internal sealed partial class OscReceiverPage
         pedalRegistration = null;
         pedals?.Dispose();
         pedals = null;
+        pendingOutputs &= ~VJoyAxes.Pedals;
         pedalDeviceId = null;
     }
 
     private void InitializeModules(IReadOnlyList<IOscModule> modules, IPreferences preferences)
     {
         wheelModule = new("wheel", "Руль", "WheelModuleEnabled",
-            preferences.Get("WheelModuleEnabled", true), preferences.Get("OscModulePinned.wheel", true), supportsFeedback: true);
+            preferences.Get("WheelModuleEnabled", true), preferences.Get("OscModulePinned.wheel", true));
         pedalsModule = new("pedals", "Педали", "PedalsModuleEnabled",
-            preferences.Get("PedalsModuleEnabled", false), preferences.Get("OscModulePinned.pedals", true), supportsFeedback: true);
+            preferences.Get("PedalsModuleEnabled", false), preferences.Get("OscModulePinned.pedals", true));
         moduleEntries.Add(wheelModule);
         moduleEntries.Add(pedalsModule);
 
@@ -116,9 +103,6 @@ internal sealed partial class OscReceiverPage
             }
         }
         moduleEntries.AddRange(extensions.OrderBy(module => module.Title, StringComparer.CurrentCultureIgnoreCase));
-        foreach (ModuleEntry entry in moduleEntries)
-            if (entry.SupportsFeedback)
-                entry.SetFeedback(preferences.Get(entry.FeedbackKey, false));
     }
 
     private bool TryEnableExtension(ModuleEntry entry)
@@ -137,7 +121,7 @@ internal sealed partial class OscReceiverPage
         }
     }
 
-    private async Task ToggleModuleAsync(ModuleEntry entry)
+    private void ToggleModule(ModuleEntry entry)
     {
         if (closed || !entry.Available)
             return;
@@ -150,7 +134,6 @@ internal sealed partial class OscReceiverPage
                 AttachWheel();
             else if (!enabled)
                 DetachWheel();
-            armAfterCalibration = enabled && autoSetup.IsToggled;
         }
         else if (entry == pedalsModule)
         {
@@ -170,12 +153,25 @@ internal sealed partial class OscReceiverPage
             entry.Registration = null;
         }
 
+        if (!enabled)
+            entry.SetError(null);
         entry.SetEnabled(enabled);
         Preferences.Default.Set(entry.EnabledKey, enabled);
-        ConfigureFeedback();
         Refresh();
-        if (entry == wheelModule && armAfterCalibration)
-            await PrepareVJoyAsync(arm: false);
+    }
+
+    private void ResetBlockedSources()
+    {
+        if (session?.Snapshot().Sender is { } wheelSource && !clientAccess.IsAllowed(wheelSource))
+        {
+            DetachWheel();
+            AttachWheel();
+        }
+        if (pedals?.Snapshot().Sender is { } pedalSource && !clientAccess.IsAllowed(pedalSource))
+        {
+            DetachPedals();
+            AttachPedals();
+        }
     }
 
     private void CloseExtensionModules()

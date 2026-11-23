@@ -14,28 +14,18 @@ public sealed record WheelSnapshot(string? Sender, long Samples, bool Fresh, boo
     public long RejectedSensorSamples { get; init; }
 }
 
-public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
+public sealed class WheelSession : IOscModule, IDisposable
 {
     private const string ModuleName = "wheel";
     private const string AccelerationAddress = "/accxyz";
     private const string CalibrateCommand = "calibrate";
-    private const string FeedbackPosition = "position";
-    private const string FeedbackAngle = "angle";
-    private const string FeedbackFresh = "fresh";
-    private const string FeedbackCalibrated = "calibrated";
-    private const string FeedbackOutput = "output";
 
     public static IReadOnlyList<OscEndpoint> OscEndpoints { get; } = Array.AsReadOnly<OscEndpoint>([
         new(AccelerationAddress, OscEndpointDirection.Receive, "X, Y, Z · три конечных числа float32 (OSC ,fff).",
             $"{AccelerationAddress} 9.8 0.0 0.0"),
         new($"/{ModuleName}/{CalibrateCommand}", OscEndpointDirection.Receive,
             "Без аргументов, Impulse, bool true или число 1 (int32, int64, float32, float64). Значение 0 игнорируется.",
-            $"/{ModuleName}/{CalibrateCommand} 1", "Калибровка принимается с того же IPv4, что и сигнал акселерометра."),
-        new($"/{ModuleName}/feedback/{FeedbackPosition}", OscEndpointDirection.Send, "Положение от −1 до 1 (float32)."),
-        new($"/{ModuleName}/feedback/{FeedbackAngle}", OscEndpointDirection.Send, "Угол в градусах (float32)."),
-        new($"/{ModuleName}/feedback/{FeedbackFresh}", OscEndpointDirection.Send, "Свежий сигнал (bool)."),
-        new($"/{ModuleName}/feedback/{FeedbackCalibrated}", OscEndpointDirection.Send, "Калибровка выполнена (bool)."),
-        new($"/{ModuleName}/feedback/{FeedbackOutput}", OscEndpointDirection.Send, "Активный выход vJoy (bool).")
+            $"/{ModuleName}/{CalibrateCommand} 1", "Калибровка принимается с того же IPv4, что и сигнал акселерометра.")
     ]);
 
     private readonly object gate = new();
@@ -46,10 +36,6 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
     private string? sender;
     private ISteeringOutput? output;
     private string? notice;
-    private OscFeedbackOrigin? positionOrigin;
-    private OscFeedbackOrigin? angleOrigin;
-    private OscFeedbackOrigin? freshOrigin;
-    private OscFeedbackOrigin? calibrationOrigin;
     private bool disposed;
     private bool outputPaused;
     private long rejectedSensorSamples;
@@ -86,30 +72,10 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
         }
     }
 
-    public IReadOnlyList<OscFeedback> GetFeedback()
-    {
-        lock (gate)
-        {
-            bool fresh = !disposed && steering.IsFresh(Stopwatch.GetElapsedTime(started));
-            var (position, angle) = ReadAxes(fresh);
-            return [
-                Feedback(FeedbackPosition, position, 0f, positionOrigin, fresh),
-                Feedback(FeedbackAngle, angle, 0f, angleOrigin, fresh),
-                Feedback(FeedbackFresh, fresh, false, freshOrigin, fresh),
-                Feedback(FeedbackCalibrated, steering.IsCalibrated, false, calibrationOrigin),
-                Feedback(FeedbackOutput, output is not null, false)
-            ];
-        }
-    }
-
     public void Configure(SteeringSettings newSettings)
     {
         lock (gate)
-        {
-            float before = (float)steering.Position(settings);
             settings = newSettings.Normalize();
-            positionOrigin = UpdateOrigin(positionOrigin, before, (float)steering.Position(settings), null);
-        }
     }
 
     public bool Calibrate()
@@ -121,10 +87,8 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
         }
     }
 
-    private bool CalibrateAt(TimeSpan now, OscEnvelope? input = null)
+    private bool CalibrateAt(TimeSpan now)
     {
-        bool wasCalibrated = steering.IsCalibrated;
-        var before = ReadAxes(steering.IsFresh(now));
         if (!steering.Calibrate(now))
         {
             notice = "Калибровка не выполнена. Требуется стабильный сигнал акселерометра.";
@@ -132,8 +96,6 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
         }
 
         notice = null;
-        UpdateAxesOrigins(before, ReadAxes(true), input);
-        calibrationOrigin = UpdateOrigin(calibrationOrigin, wasCalibrated, true, input);
         WritePosition(0);
         return true;
     }
@@ -145,8 +107,8 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
             if (output is not null)
                 return;
-            if (!steering.IsCalibrated || !steering.IsFresh(Stopwatch.GetElapsedTime(started)))
-                throw new InvalidOperationException("Для передачи в vJoy требуются сигнал акселерометра и калибровка.");
+            if (!steering.IsCalibrated)
+                throw new InvalidOperationException("Для передачи в vJoy требуется калибровка.");
 
             output = acquire();
             notice = null;
@@ -194,8 +156,6 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
 
             TimeSpan now = Stopwatch.GetElapsedTime(started);
             CheckTimeout(now);
-            bool wasFresh = steering.IsFresh(now);
-            var before = ReadAxes(wasFresh);
             TimeSpan received = Stopwatch.GetElapsedTime(started, envelope.ReceivedTimestamp);
             if (now - received >= SteeringEstimator.Timeout)
                 return;
@@ -207,8 +167,6 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             }
 
             sender ??= envelope.Sender.IpAddress;
-            UpdateAxesOrigins(before, ReadAxes(true), envelope, force: !wasFresh);
-            freshOrigin = UpdateOrigin(freshOrigin, wasFresh, true, envelope);
             outputPaused = false;
             WritePosition(steering.Position(settings));
         }
@@ -227,36 +185,9 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
             TimeSpan now = Stopwatch.GetElapsedTime(started);
             TimeSpan received = Stopwatch.GetElapsedTime(started, command.Envelope.ReceivedTimestamp);
             if (now - received < SteeringEstimator.Timeout)
-                CalibrateAt(now, command.Envelope);
+                CalibrateAt(now);
         }
     }
-
-    private (float Position, float Angle) ReadAxes(bool fresh) =>
-        fresh ? ((float)steering.Position(settings), (float)(steering.RelativeAngle ?? 0)) : (0, 0);
-
-    private void UpdateAxesOrigins((float Position, float Angle) before, (float Position, float Angle) after,
-        OscEnvelope? input, bool force = false)
-    {
-        positionOrigin = UpdateOrigin(positionOrigin, before.Position, after.Position, input, force);
-        angleOrigin = UpdateOrigin(angleOrigin, before.Angle, after.Angle, input, force);
-    }
-
-    private static OscFeedbackOrigin? UpdateOrigin<T>(OscFeedbackOrigin? previous, T before, T after,
-        OscEnvelope? input, bool force = false) where T : IEquatable<T>
-    {
-        if (!force && before.Equals(after))
-            return previous;
-        if (input is not null)
-            return new(input.Sender.IpAddress, input.ReceivedTimestamp, [after]);
-        return previous is null ? null : previous with { SuppressEcho = false };
-    }
-
-    private static OscFeedback Feedback(string name, object value, object initial, OscFeedbackOrigin? origin = null,
-        bool inputActive = true) => new(name, [value])
-    {
-        InitialArguments = [initial],
-        Origin = origin is { SuppressEcho: true } && !inputActive ? origin with { SuppressEcho = false } : origin
-    };
 
     private static bool IsCalibrationTrigger(OscMessage message) =>
         message.Types == ",I" || message.Arguments is [] or [true] or [1] or [1L] or [1f] or [1d];
@@ -279,7 +210,7 @@ public sealed class WheelSession : IOscModule, IOscFeedbackSource, IDisposable
         {
             if (output.TryWrite(position))
                 return;
-            notice = "vJoy отклонил команду. Требуется повторное включение руля.";
+            notice = "vJoy отклонил команду. Перезапустите модуль «Руль».";
         }
         catch (Exception error)
         {

@@ -6,7 +6,33 @@ namespace Laveyana.LavOSC;
 
 internal sealed partial class OscReceiverPage
 {
-    private async Task PrepareVJoyAsync(bool arm, VJoyAxes axes = VJoyAxes.X)
+    private VJoyAxes GetInactiveOutputAxes() => GetInactiveOutputAxes(
+        session?.Snapshot().OutputActive == true, pedals?.Snapshot().OutputActive == true);
+
+    private VJoyAxes GetInactiveOutputAxes(bool wheelActive, bool pedalsActive) =>
+        (wheelModule.IsEnabled && !wheelActive ? VJoyAxes.X : VJoyAxes.None) |
+        (pedalsModule.IsEnabled && !pedalsActive ? VJoyAxes.Pedals : VJoyAxes.None);
+
+    private async Task ConnectReadyOutputAsync()
+    {
+        if (working || closed || pendingOutputs == VJoyAxes.None)
+            return;
+
+        VJoyAxes axes = VJoyAxes.None;
+        if ((pendingOutputs & VJoyAxes.X) != 0 &&
+            session?.Snapshot() is { Fresh: true, Calibrated: true, OutputActive: false })
+            axes = VJoyAxes.X;
+        else if ((pendingOutputs & VJoyAxes.Pedals) != 0 &&
+            pedals?.Snapshot() is { Sender: not null, OutputActive: false })
+            axes = VJoyAxes.Pedals;
+
+        if (axes == VJoyAxes.None)
+            return;
+        pendingOutputs &= ~axes;
+        await PrepareVJoyAsync(arm: true, axes);
+    }
+
+    private async Task PrepareVJoyAsync(bool arm, VJoyAxes axes)
     {
         if (working || closed || axes == VJoyAxes.None)
             return;
@@ -29,9 +55,11 @@ internal sealed partial class OscReceiverPage
 
         int? sharedId = axes == VJoyAxes.X && pedalsActive ? pedalDeviceId :
             axes == VJoyAxes.Pedals && wheelActive ? wheelDeviceId : null;
+        bool allowSystemChanges = !arm || autoSetup.IsToggled;
         var options = new VJoySetupOptions(dllPath.Text, Math.Max(0, device.SelectedIndex),
             sharedId ?? preparedDeviceId ?? Preferences.Default.Get("VJoyDevice", 0), axes,
-            AllowDeviceCreation: !wheelActive && !pedalsActive);
+            AllowDeviceCreation: allowSystemChanges && !wheelActive && !pedalsActive,
+            AllowDriverRecovery: allowSystemChanges);
 
         working = true;
         vJoyError = null;
@@ -57,7 +85,12 @@ internal sealed partial class OscReceiverPage
             vJoyMessage = prepared.Created ? $"Создано устройство №{prepared.Id} · оси X, Y, Z" :
                 $"Подготовлено устройство №{prepared.Id} · {VJoyOutput.FormatAxes(axes)}";
 
-            if (!arm || !SessionIsCurrent())
+            if (!arm)
+            {
+                pendingOutputs |= GetInactiveOutputAxes();
+                return;
+            }
+            if (!SessionIsCurrent())
                 return;
 
             vJoyMessage = $"Подключение к устройству №{prepared.Id}…";
@@ -71,12 +104,16 @@ internal sealed partial class OscReceiverPage
                 if (axes == VJoyAxes.X)
                 {
                     currentWheel!.EnableOutput(() => pending);
+                    if (!currentWheel.Snapshot().OutputActive)
+                        throw new InvalidOperationException(currentWheel.Snapshot().Notice ?? "Руль не подключён к vJoy.");
                     wheelDeviceId = prepared.Id;
+                    wheelModule.SetError(null);
                 }
                 else
                 {
                     currentPedals!.EnableOutput(() => pending);
                     pedalDeviceId = prepared.Id;
+                    pedalsModule.SetError(null);
                 }
 
                 pending = null;
@@ -95,8 +132,8 @@ internal sealed partial class OscReceiverPage
             UnauthorizedAccessException or IOException or System.Security.SecurityException)
         {
             vJoyError = exception.Message;
-            if (axes == VJoyAxes.X && ReferenceEquals(currentWheel, session))
-                armAfterCalibration = false;
+            if (arm && SessionIsCurrent())
+                (axes == VJoyAxes.X ? wheelModule : pedalsModule).SetError(exception.Message);
         }
         finally
         {
@@ -114,6 +151,7 @@ internal sealed partial class OscReceiverPage
         vJoyError = null;
         vJoyMessage = null;
         vJoyScan = null;
+        pendingOutputs |= GetInactiveOutputAxes();
         Refresh();
     }
 
