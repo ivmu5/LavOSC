@@ -4,7 +4,8 @@ using Laveyana.LavOSC.Core;
 namespace Laveyana.LavOSC;
 
 internal sealed class ModuleEntry(string name, string title, string enabledKey,
-    bool enabled = false, bool pinned = false, IOscModule? extension = null, string? validationError = null)
+    bool enabled = false, bool pinned = false, IOscModule? extension = null, string? validationError = null,
+    bool supportsFeedback = false)
     : INotifyPropertyChanged
 {
     public string Name { get; } = name;
@@ -12,9 +13,12 @@ internal sealed class ModuleEntry(string name, string title, string enabledKey,
     public string Address => $"/{Name}";
     public string EnabledKey { get; } = enabledKey;
     public string PinnedKey => $"OscModulePinned.{Name}";
+    public string FeedbackKey => $"OscModuleFeedback.{Name}";
     public IOscModule? Extension { get; } = extension;
     public IDisposable? Registration { get; set; }
     public bool Available { get; } = validationError is null;
+    public bool SupportsFeedback => supportsFeedback || Extension is IOscFeedbackSource;
+    public bool FeedbackEnabled { get; private set; }
     public bool IsEnabled { get; private set; } = enabled;
     public bool IsPinned { get; private set; } = pinned;
     public string PinAction => IsPinned ? "Убрать с главной" : "На главный экран";
@@ -54,6 +58,14 @@ internal sealed class ModuleEntry(string name, string title, string enabledKey,
 
         Error = value;
         Notify(nameof(Error), nameof(HasError), nameof(State));
+    }
+
+    public void SetFeedback(bool value)
+    {
+        if (FeedbackEnabled == value)
+            return;
+        FeedbackEnabled = value;
+        Notify(nameof(FeedbackEnabled));
     }
 
     private void Notify(params string[] properties)

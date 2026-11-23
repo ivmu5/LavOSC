@@ -6,7 +6,11 @@ namespace Laveyana.LavOSC;
 
 internal enum ClientAccessMode { Blacklist, Whitelist }
 
-internal sealed record ClientAccessRule(string Address, bool Blocked = false, bool Allowed = false);
+internal sealed record ClientAccessRule(string Address, bool Blocked = false, bool Allowed = false,
+    int FeedbackPort = 9000, bool FeedbackEnabled = false)
+{
+    public bool IsAllowed(ClientAccessMode mode) => mode == ClientAccessMode.Whitelist ? Allowed : !Blocked;
+}
 
 internal sealed record ClientAccessSettings(ClientAccessMode Mode, bool BlockNew, ClientAccessRule[] Clients);
 
@@ -27,7 +31,15 @@ internal sealed class ClientAccessPolicy
             blockNew = settings.BlockNew;
             foreach (ClientAccessRule rule in settings.Clients ?? [])
                 if (Normalize(rule.Address) is { } address)
-                    clients.TryAdd(address, rule with { Address = address });
+                {
+                    bool validPort = rule.FeedbackPort is >= 1 and <= 65535;
+                    clients.TryAdd(address, rule with
+                    {
+                        Address = address,
+                        FeedbackPort = validPort ? rule.FeedbackPort : 9000,
+                        FeedbackEnabled = validPort && rule.FeedbackEnabled
+                    });
+                }
             Interlocked.Increment(ref version);
         }
     }
@@ -48,14 +60,14 @@ internal sealed class ClientAccessPolicy
                 clients.Add(sender.IpAddress, rule);
                 Interlocked.Increment(ref version);
             }
-            return Allows(rule);
+            return rule.IsAllowed(mode);
         }
     }
 
     public bool IsAllowed(string address)
     {
         lock (gate)
-            return clients.TryGetValue(address, out var rule) && Allows(rule);
+            return clients.TryGetValue(address, out var rule) && rule.IsAllowed(mode);
     }
 
     public bool SetAllowed(string address, bool allowed)
@@ -86,7 +98,20 @@ internal sealed class ClientAccessPolicy
         }
     }
 
-    private bool Allows(ClientAccessRule rule) => mode == ClientAccessMode.Whitelist ? rule.Allowed : !rule.Blocked;
+    public void SetFeedback(string address, int port, bool enabled)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(port, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
+
+        lock (gate)
+        {
+            if (!clients.TryGetValue(address, out var rule) ||
+                (rule.FeedbackPort == port && rule.FeedbackEnabled == enabled))
+                return;
+            clients[address] = rule with { FeedbackPort = port, FeedbackEnabled = enabled };
+            Interlocked.Increment(ref version);
+        }
+    }
 
     private static string? Normalize(string? address) =>
         IPAddress.TryParse(address, out var ip) && ip.AddressFamily == AddressFamily.InterNetwork ? ip.ToString() : null;

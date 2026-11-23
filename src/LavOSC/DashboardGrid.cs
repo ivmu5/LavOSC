@@ -7,6 +7,19 @@ internal sealed class DashboardGrid : Grid
 {
     private readonly int maximumColumns;
     private int columns;
+    private double minimumSingleRowHeight;
+
+    public double MinimumSingleRowHeight
+    {
+        get => minimumSingleRowHeight;
+        set
+        {
+            if (minimumSingleRowHeight == value)
+                return;
+            minimumSingleRowHeight = value;
+            ApplyRowHeight();
+        }
+    }
 
     public DashboardGrid(int maximumColumns)
     {
@@ -46,5 +59,13 @@ internal sealed class DashboardGrid : Grid
             SetColumn(Children[index], index % count);
             SetRow(Children[index], index / count);
         }
+        ApplyRowHeight();
+    }
+
+    private void ApplyRowHeight()
+    {
+        double height = Children.Count <= columns ? minimumSingleRowHeight : 0;
+        foreach (View card in Children.OfType<View>())
+            card.MinimumHeightRequest = height;
     }
 }

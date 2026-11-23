@@ -6,6 +6,7 @@ using Microsoft.Maui;
 using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Storage;
+using Microsoft.Maui.Storage;
 
 namespace Laveyana.LavOSC;
 
@@ -101,14 +102,7 @@ internal sealed partial class OscReceiverPage
             Grid.SetRow(oscReferenceScroll, next ? 0 : 1);
         };
         moduleDetailsScroll.Content = moduleDetails;
-        var view = new Grid
-        {
-            RowSpacing = 16,
-            RowDefinitions = { new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star) }
-        };
-        view.Add(PageHeading("Модули"));
-        view.Add(panes, 0, 1);
-        return view;
+        return panes;
     }
 
     private View MakeCatalogRow()
@@ -232,7 +226,7 @@ internal sealed partial class OscReceiverPage
 
         try
         {
-            return GetModuleInputs(entry).Any(endpoint => endpoint.Address.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+            return GetModuleEndpoints(entry).Any(endpoint => endpoint.Address.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
                 (entry == wheelModule && "/whell/calibrate".Contains(query, StringComparison.OrdinalIgnoreCase));
         }
         catch (Exception)
@@ -241,11 +235,10 @@ internal sealed partial class OscReceiverPage
         }
     }
 
-    private IEnumerable<OscEndpoint> GetModuleInputs(ModuleEntry entry) =>
-        (entry == wheelModule ? WheelSession.OscEndpoints
+    private IReadOnlyList<OscEndpoint> GetModuleEndpoints(ModuleEntry entry) =>
+        entry == wheelModule ? WheelSession.OscEndpoints
             : entry == pedalsModule ? PedalSession.OscEndpoints
-            : (entry.Extension as IOscEndpointDocumentation)?.Endpoints ?? [])
-        .Where(endpoint => endpoint.Direction == OscEndpointDirection.Receive);
+            : (entry.Extension as IOscEndpointDocumentation)?.Endpoints ?? [];
 
     private void ShowModuleDetails()
     {
@@ -277,10 +270,10 @@ internal sealed partial class OscReceiverPage
     private View MakeOscReference(ModuleEntry entry)
     {
         var reference = new VerticalStackLayout { Spacing = 12, Children = { Heading("OSC-адреса", 19) } };
-        OscEndpoint[] inputs;
+        IReadOnlyList<OscEndpoint> endpoints;
         try
         {
-            inputs = GetModuleInputs(entry).ToArray();
+            endpoints = GetModuleEndpoints(entry);
         }
         catch (Exception error)
         {
@@ -288,31 +281,36 @@ internal sealed partial class OscReceiverPage
             return Card(reference);
         }
 
-        if (inputs.Length == 0)
+        if (endpoints.Count == 0)
             reference.Children.Add(Caption("Модуль не предоставил описание OSC-адресов."));
 
-        foreach (OscEndpoint endpoint in inputs)
+        foreach (var group in endpoints.GroupBy(endpoint => endpoint.Direction).OrderBy(group => group.Key))
         {
-            var details = new VerticalStackLayout { Spacing = 4, Children = { MakeOscAddressRow(endpoint.Address) } };
-            if (entry == wheelModule && endpoint.Address.StartsWith(entry.Address + "/", StringComparison.Ordinal))
+            reference.Children.Add(Heading(group.Key == OscEndpointDirection.Receive ? "Входящие" : "Исходящие", 14));
+            foreach (OscEndpoint endpoint in group)
             {
-                details.Children.Add(Caption("Псевдоним"));
-                details.Children.Add(MakeOscAddressRow($"/{WheelAlias}{endpoint.Address[entry.Address.Length..]}"));
+                var details = new VerticalStackLayout { Spacing = 4, Children = { MakeOscAddressRow(endpoint.Address) } };
+                if (entry == wheelModule && group.Key == OscEndpointDirection.Receive &&
+                    endpoint.Address.StartsWith(entry.Address + "/", StringComparison.Ordinal))
+                {
+                    details.Children.Add(Caption("Псевдоним"));
+                    details.Children.Add(MakeOscAddressRow($"/{WheelAlias}{endpoint.Address[entry.Address.Length..]}"));
+                }
+                details.Children.Add(Caption(endpoint.Arguments));
+                if (endpoint.Example is { } example)
+                {
+                    var sample = Caption(example);
+                    sample.FontFamily = "Consolas";
+                    sample.TextColor = Accent;
+                    details.Children.Add(sample);
+                }
+                if (endpoint.Notes is { } notes)
+                    details.Children.Add(Caption(notes));
+                var block = Card(details);
+                block.BackgroundColor = PulseVisuals.Recessed;
+                block.Padding = new Thickness(10);
+                reference.Children.Add(block);
             }
-            details.Children.Add(Caption(endpoint.Arguments));
-            if (endpoint.Example is { } example)
-            {
-                var sample = Caption(example);
-                sample.FontFamily = "Consolas";
-                sample.TextColor = Accent;
-                details.Children.Add(sample);
-            }
-            if (endpoint.Notes is { } notes)
-                details.Children.Add(Caption(notes));
-            var block = Card(details);
-            block.BackgroundColor = PulseVisuals.Recessed;
-            block.Padding = new Thickness(10);
-            reference.Children.Add(block);
         }
         return Card(reference);
     }
@@ -353,7 +351,7 @@ internal sealed partial class OscReceiverPage
         return row;
     }
 
-    private static View MakeModuleSummary(ModuleEntry entry)
+    private View MakeModuleSummary(ModuleEntry entry)
     {
         var title = Heading(entry.Title, 22);
         title.LineBreakMode = LineBreakMode.TailTruncation;
@@ -363,6 +361,21 @@ internal sealed partial class OscReceiverPage
         {
             BindingContext = entry, Spacing = 8, Children = { title, state, MakeModuleError() }
         };
+        if (entry.SupportsFeedback)
+        {
+            var toggle = new Switch { OnColor = Accent };
+            toggle.SetBinding(Switch.IsToggledProperty, nameof(ModuleEntry.FeedbackEnabled), BindingMode.OneWay);
+            SemanticProperties.SetDescription(toggle, "Отправлять данные модуля по OSC");
+            toggle.Toggled += (_, args) =>
+            {
+                if (entry.FeedbackEnabled == args.Value)
+                    return;
+                entry.SetFeedback(args.Value);
+                Preferences.Default.Set(entry.FeedbackKey, args.Value);
+                ConfigureFeedback();
+            };
+            body.Children.Add(Row(Caption("Отправлять данные по OSC"), toggle));
+        }
         return Card(body);
     }
 
