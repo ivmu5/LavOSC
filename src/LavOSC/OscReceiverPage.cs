@@ -38,8 +38,8 @@ internal sealed partial class OscReceiverPage : ContentPage
     private readonly Label vJoyLibrary = Caption();
     private readonly Label localAddresses = Caption();
     private readonly Label sensorValues = Caption();
-    private readonly Label angle = Heading("", 30);
-    private readonly Label axisValue = Caption();
+    private readonly Label angle = MetricValue(32);
+    private readonly Label axisValue = MetricValue(20);
     private readonly Label notice = Caption();
     private readonly Switch invert = new() { OnColor = Accent };
     private readonly Switch autoSetup = new() { OnColor = Accent };
@@ -47,7 +47,7 @@ internal sealed partial class OscReceiverPage : ContentPage
     private readonly Slider deadZone = MakeSlider(0, 10);
     private readonly Slider smoothing = MakeSlider(0, 150);
     private readonly SteeringGauge gauge = new();
-    private readonly GraphicsView gaugeView = new() { HeightRequest = 40 };
+    private readonly GraphicsView gaugeView = new() { HeightRequest = 46 };
     private readonly IDispatcherTimer timer;
     private readonly Stopwatch rateClock = Stopwatch.StartNew();
     private readonly CancellationTokenSource lifetime = new();
@@ -301,6 +301,7 @@ internal sealed partial class OscReceiverPage : ContentPage
         prepare.IsEnabled = !working && GetInactiveOutputAxes(active, pedalsActive) != VJoyAxes.None;
         listen.Text = input?.Listening == true ? "Остановить приём" : "Начать приём";
         settingsListen.Text = listen.Text;
+        UpdateDashboardStatus(input, active, pedalsActive);
         calibrate.IsEnabled = receiving;
         RefreshPedals(pedalSnapshot);
     }
@@ -351,12 +352,15 @@ internal sealed partial class OscReceiverPage : ContentPage
     private static Label Heading(string value, double size) =>
         new() { Text = value, FontSize = size, FontFamily = PulseVisuals.Font, FontAttributes = FontAttributes.Bold, TextColor = Text };
 
+    private static Label MetricValue(double size) =>
+        new() { FontFamily = "Consolas", FontSize = size, TextColor = Text, VerticalOptions = LayoutOptions.Center };
+
     private static Button MakeButton(string text, bool primary = false) =>
         new()
         {
             Text = text, TextColor = primary ? Canvas : Text, BackgroundColor = primary ? Accent : PulseVisuals.Button,
-            FontFamily = PulseVisuals.Font, FontSize = 12, CornerRadius = 9,
-            Padding = new Thickness(10, 8), MinimumHeightRequest = 36
+            FontFamily = PulseVisuals.Font, FontSize = 13, CornerRadius = 9,
+            Padding = new Thickness(12, 8), MinimumHeightRequest = 38
         };
 
     private static Entry MakeEntry(Keyboard keyboard) =>
@@ -398,8 +402,8 @@ internal sealed partial class OscReceiverPage : ContentPage
     private static Border Card(View content) =>
         new()
         {
-            BackgroundColor = Panel, Stroke = new SolidColorBrush(Outline.WithAlpha(.32f)), StrokeThickness = 1,
-            StrokeShape = new RoundRectangle { CornerRadius = 12 }, Padding = new Thickness(14, 12),
+            BackgroundColor = Panel, Stroke = new SolidColorBrush(Outline.WithAlpha(.40f)), StrokeThickness = 1,
+            StrokeShape = new RoundRectangle { CornerRadius = 14 }, Padding = new Thickness(16),
             Content = content
         };
 
@@ -410,17 +414,34 @@ internal sealed partial class OscReceiverPage : ContentPage
 
         public void Draw(ICanvas canvas, RectF area)
         {
-            float left = area.Left + 8;
-            float width = Math.Max(0, area.Width - 16);
+            float left = area.Left + 12;
+            float width = Math.Max(0, area.Width - 24);
+            if (width == 0)
+                return;
             float middle = area.Center.Y;
             float center = left + width / 2;
-            float point = center + (float)Position * width / 2;
+            float point = center + (float)Math.Clamp(Position, -1, 1) * width / 2;
+            canvas.FillColor = PulseVisuals.Recessed;
+            canvas.FillRoundedRectangle(area.Left, middle - 12, area.Width, 24, 8);
+            canvas.FillColor = Outline.WithAlpha(.72f);
+            canvas.FillRoundedRectangle(left, middle - 2, width, 4, 2);
+            for (int tick = 0; tick <= 8; tick++)
+            {
+                float x = left + width * tick / 8;
+                canvas.FillRectangle(x - .5f, middle + 14, 1, tick % 4 == 0 ? 6 : 3);
+            }
+            var pointer = Active ? Accent : Muted;
+            if (point != center)
+            {
+                canvas.FillColor = pointer.WithAlpha(.75f);
+                canvas.FillRectangle(Math.Min(center, point), middle - 2, Math.Abs(point - center), 4);
+            }
             canvas.FillColor = Outline;
-            canvas.FillRoundedRectangle(left, middle - 4, width, 8, 4);
-            canvas.FillColor = Active ? Accent : Muted;
-            canvas.FillRectangle(Math.Min(center, point), middle - 4, Math.Abs(point - center), 8);
-            canvas.FillRectangle(center - 1, middle - 10, 2, 20);
-            canvas.FillCircle(point, middle, 7);
+            canvas.FillRoundedRectangle(center - 1, middle - 7, 2, 14, 1);
+            canvas.FillColor = pointer.WithAlpha(.18f);
+            canvas.FillCircle(point, middle, 10);
+            canvas.FillColor = pointer;
+            canvas.FillCircle(point, middle, 5);
         }
     }
 }
